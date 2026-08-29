@@ -1,0 +1,13 @@
+{
+  "//": "Template: merge this mcpServers entry into ~/.openclaw/openclaw.json on the brain host (AS-27).",
+  "//secret": "The token is read from the CHORES_MCP_TOKEN env var - do NOT paste the JWT here.",
+  "mcpServers": {
+    "chore-app": {
+      "transport": "streamable-http",
+      "url": "https://chores.mikeedelossantos.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CHORES_MCP_TOKEN}"
+      }
+    }
+  }
+}
