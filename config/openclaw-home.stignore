@@ -1,0 +1,24 @@
+// Syncthing ignore patterns for the OpenClaw home folder (data/openclaw).
+// Place this file as `.stignore` inside the synced folder on BOTH hosts.
+//
+// Principle: the Markdown memory is the source of truth and syncs.
+// The SQLite index is derived and MUST NOT sync (live DB sync corrupts it) -
+// the backup rebuilds it from the Markdown on promotion (AS-15).
+
+// Derived search index and any SQLite state - never sync.
+*.sqlite
+*.sqlite-*
+memory/main.sqlite*
+
+// Logs and scratch.
+*.log
+/logs
+/tmp
+
+// Secrets must never leave the host.
+.env
+.env.*
+
+// OS noise.
+.DS_Store
+Thumbs.db
