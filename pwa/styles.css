@@ -1,0 +1,64 @@
+:root {
+  --bg: #0b0f1a;
+  --panel: #141a2b;
+  --text: #e8ecf5;
+  --muted: #8b93a7;
+  --accent: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, sans-serif;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.transcript { flex: 1; overflow-y: auto; }
+.hint { color: var(--muted); }
+
+.turn { margin: 0.75rem 0; }
+.turn .you { color: var(--accent); margin: 0 0 0.25rem; }
+.turn .bot { background: var(--panel); padding: 0.6rem 0.8rem; border-radius: 0.6rem; margin: 0; }
+
+.draft {
+  width: 100%;
+  min-height: 4rem;
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  border-radius: 0.6rem;
+  border: 1px solid #263149;
+  background: var(--panel);
+  color: var(--text);
+  resize: vertical;
+}
+
+.controls { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+
+.talk, .send {
+  flex: 1;
+  padding: 1rem;
+  border: none;
+  border-radius: 0.8rem;
+  font-size: 1.1rem;
+  color: #fff;
+  cursor: pointer;
+  touch-action: none;
+}
+.talk { background: var(--accent); user-select: none; }
+.talk:active { filter: brightness(0.85); }
+.send { background: #2a9d63; }
+
+.status { color: var(--muted); min-height: 1.25rem; margin: 0.5rem 0 0; }
