@@ -38,6 +38,10 @@ no BlueBubbles server, no paid API. The only cost is the Mac being on.
    If it errors on permissions, re-check Full Disk Access and re-run.
 
 ## PC-side setup (Claude handles this once the Mac side verifies)
+Current step-by-step plan: ROADMAP.md, section "Handoff: wire the PC brain to imsg
+over SSH". Scripts: `scripts/imsg-ssh-gate.py` (Mac forced command) and
+`scripts/imsg-over-ssh.sh` (brain-side cliPath wrapper).
+
 1. Passwordless SSH from PC to Mac: generate a key on the PC, add the public key to
    the Mac's `~/.ssh/authorized_keys`. Test: `ssh <mac-user>@<mac-tailnet-ip> /opt/homebrew/bin/imsg chats --limit 1`
    (full path, because a non-interactive SSH command does not load the Homebrew PATH).

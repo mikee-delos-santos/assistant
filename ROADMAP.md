@@ -91,7 +91,7 @@ Runbook: docs/runbooks/chores-mcp-integration.md
 ## Channels & persona
 | Task | Status | Notes |
 |---|---|---|
-| iMessage family channel (free, imsg over Tailscale) | WIP | prototype on personal Apple ID (Option A); Mac side installed; SSH round trip PASSED 2026-09-13 (send + read over SSH to the Mac itself); PC-side wrapper not set up yet |
+| iMessage family channel (free, imsg over Tailscale) | WIP | prototype on personal Apple ID (Option A); SSH round trip PASSED 2026-09-13 on the Mac itself; PC wiring in progress, see "Handoff: wire the PC brain" |
 | Assistant name / persona + dedicated Apple ID (Option B) | TODO | future; move off the personal Apple ID before real family use |
 | iPhone device pairing to the PC brain | TODO | open tailnet URL, pair, approve on PC |
 
@@ -125,7 +125,8 @@ Option B - dedicated free Apple ID for the assistant (FUTURE)
   the tailnet, SSH from a container via host.docker.internal, and after a Mac reboot
   or while the screen is locked. The Mac user must stay logged in.
 - A local-only test key exists on the Mac: ~/.ssh/id_ed25519_imsg_bridge_local, in
-  authorized_keys with from="127.0.0.1,::1". Remove it once the PC key is in place.
+  authorized_keys with from="127.0.0.1,::1" and the imsg gate as forced command.
+  Remove it once the PC key is in place.
 - The Mac brain cannot run imsg "locally". Docker on macOS runs Linux, and imsg is a
   macOS binary. A containerized Mac brain must also reach the Mac host over SSH
   (e.g. host.docker.internal), so the -1743 risk applies to both brains.
@@ -145,6 +146,66 @@ Option B - dedicated free Apple ID for the assistant (FUTURE)
   Already granted: imsg read chat.db over SSH on 2026-09-13.
 - Over SSH, call imsg by full path (/opt/homebrew/bin/imsg). A non-interactive SSH
   command does not load the Homebrew PATH.
+
+## Handoff: wire the PC brain to imsg over SSH  (status: WIP, started 2026-09-13)
+Coordination: Mac Claude and PC Claude follow this section. Files that must not go in
+git move over Taildrop (`tailscale file cp <file> <host>:`). Each side updates this
+section when its part is done. Nobody sends an iMessage in this handoff.
+
+What this phase does: the PC can run `imsg` on the Mac over SSH, with a key that is
+locked down on the Mac. What it does NOT do: turn on the OpenClaw iMessage channel,
+change docker-compose.yml, or restart the container. Those wait for the sender
+allowlist and the container SSH plan (Phase B below).
+
+Lock-down on the Mac (DONE by Mac Claude, tested 2026-09-13):
+- `scripts/imsg-ssh-gate.py` is installed as `~/.imsg-bridge/imsg-ssh-gate`. It is the
+  SSH forced command for the brain key. It runs only `/opt/homebrew/bin/imsg`, never a
+  shell, and blocks `imsg launch`. Tested: imsg allowed; `id`, empty login,
+  `imsg launch`, `;` and `$(...)` injection, and scp all denied.
+- The PC key will be added as:
+  `from="100.123.4.5",command="/Users/mikee/.imsg-bridge/imsg-ssh-gate",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 ...`
+- `scripts/imsg-over-ssh.sh` is the brain-side wrapper. It quotes each argument so text
+  with spaces, quotes, and newlines reaches imsg unchanged (tested on bash 3.2).
+
+Mac host key (check this before trusting the Mac):
+`SHA256:EYJzw5MIsUCYbJ8P9fnDpqeHtUpVkSfd59ekfDo54KA` (ED25519)
+
+| # | Who | Step | Status |
+|---|---|---|---|
+| 1 | PC | `git pull` on main | TODO |
+| 2 | PC | Make a key: `ssh-keygen -t ed25519 -N "" -C "pc-brain-imsg" -f <repo>\data\openclaw-ssh\id_ed25519` (data/ is gitignored) | TODO |
+| 3 | PC | Send ONLY the public key: copy `id_ed25519.pub` to `pc-brain-imsg.pub`, `tailscale file cp pc-brain-imsg.pub macbook-air:`, delete the copy. Never send the private key | TODO |
+| 4 | Mac | Install the key with the lock-down line above; send `mac-key-installed.txt` back | TODO |
+| 5 | PC | Build `<repo>\data\openclaw-ssh\known_hosts`: `ssh-keyscan -t ed25519 100.67.66.94`, then `ssh-keygen -lf` on it. STOP if the fingerprint is not the one above | TODO |
+| 6 | PC | Read-only test from Windows: `ssh -T -i <key> -o IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts> -o StrictHostKeyChecking=yes mikee@100.67.66.94 /opt/homebrew/bin/imsg chats --limit 1`. Expect one chat line. Then run the same with `id` instead of imsg: expect `imsg-ssh-gate: denied` | TODO |
+| 7 | PC | Read-only container check, no restart: `docker exec openclaw sh -c "command -v ssh bash sed; id -u; uname -m"` | TODO |
+| 8 | PC | Send `pc-ssh-status.txt` to macbook-air (format below) | TODO |
+| 9 | Mac | Record results here; remove the local test key if no longer needed | TODO |
+
+`pc-ssh-status.txt` format (plain text, NO secrets, NO phone numbers - do not copy the
+imsg output, it contains numbers):
+```
+key_fingerprint=<SHA256 of the PC public key>
+mac_hostkey_match=yes|no
+imsg_read_test=ok|failed: <error>
+gate_denies_id=yes|no: <output>
+container_ssh=<path or missing>
+container_bash=<path or missing>
+container_sed=<path or missing>
+container_uid=<n>
+container_arch=<arch>
+errors=none|<short text>
+```
+
+Phase B (later, not in this handoff):
+- Find the sender allowlist for channels.imessage in the OpenClaw docs (BLOCKER).
+- Get the key and wrapper into the container. A Windows bind mount shows files as 0777,
+  and ssh refuses a private key like that. Plan: copy the key to a container-only path
+  with `chmod 600` at start, or install the image's ssh client if it is missing.
+- Set `IMSG_SSH_TARGET`, `IMSG_SSH_KEY`, `IMSG_SSH_KNOWN_HOSTS`, point
+  `channels.imessage.cliPath` at the wrapper, enable the channel, restart, test with the
+  wife's phone.
+- Attachments: the gate blocks scp, so attachments stay off until we design for them.
 
 ## Runbooks
 - docs/runbooks/openclaw-on-windows.md - PC brain (Docker, harden, Tailscale serve)
