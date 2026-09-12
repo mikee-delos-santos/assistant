@@ -15,16 +15,18 @@ no BlueBubbles server, no paid API. The only cost is the Mac being on.
 
 ## Prerequisites
 - Mac on macOS 14+ and on the tailnet (Tailscale installed and signed in).
-- Messages signed into an Apple ID. Recommended: a dedicated FREE Apple ID for the
-  assistant, so it shows up as its own contact instead of replying "as you."
+- Messages signed into an Apple ID. The prototype uses Mark's personal Apple ID
+  (Option A, see ROADMAP.md). For real family use, a dedicated FREE Apple ID
+  (Option B), so it shows up as its own contact instead of replying "as you."
 - PC and Mac on the same tailnet (already true: PC is desktop-3p37btg / 100.123.4.5).
 
 ## Mac-side setup (do this at the Mac)
 1. Install Homebrew if needed:
    `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
-2. Install the imsg CLI: `brew install imsg`
+2. Install the imsg CLI: `brew install steipete/tap/imsg`
    (If the formula name differs, check the current tap at https://docs.openclaw.ai/channels/imessage)
-3. Sign Messages into the assistant's Apple ID (System Settings / Messages).
+3. Sign Messages into the Apple ID: personal for the prototype (Option A), dedicated
+   later (Option B).
 4. Enable Remote Login so the PC can SSH in over Tailscale:
    System Settings > General > Sharing > Remote Login = On.
    Note the Mac's tailnet IP: `tailscale ip -4`
@@ -37,13 +39,17 @@ no BlueBubbles server, no paid API. The only cost is the Mac being on.
 
 ## PC-side setup (Claude handles this once the Mac side verifies)
 1. Passwordless SSH from PC to Mac: generate a key on the PC, add the public key to
-   the Mac's `~/.ssh/authorized_keys`. Test: `ssh <mac-tailnet-ip> imsg chats --limit 1`.
+   the Mac's `~/.ssh/authorized_keys`. Test: `ssh <mac-user>@<mac-tailnet-ip> /opt/homebrew/bin/imsg chats --limit 1`
+   (full path, because a non-interactive SSH command does not load the Homebrew PATH).
+   SSH sessions also need Full Disk Access for /usr/libexec/sshd-keygen-wrapper.
 2. Wrapper script the gateway calls as `cliPath` that runs `imsg` on the Mac via SSH
    (and `scp` for attachments).
 3. Configure OpenClaw: set `channels.imessage.cliPath` to the wrapper, set
    `channels.imessage.dbPath` if required, and enable the imessage channel.
 4. Restart the gateway; confirm with `openclaw channels list`.
-5. Route replies to iMessage; test by texting the assistant's Apple ID from the phone.
+5. Route replies to iMessage; test by texting from a DIFFERENT Apple ID
+   (e.g. Mark's wife's phone). Under Option A, a text from Mark's own iPhone is Mark to
+   himself and does not test the bridge.
 
 ## Known catches (still $0)
 - Use a dedicated free Apple ID so the assistant isn't "you."
