@@ -159,13 +159,28 @@ allowlist and the container SSH plan (Phase B below).
 
 Lock-down on the Mac (DONE by Mac Claude, tested 2026-09-13):
 - `scripts/imsg-ssh-gate.py` is installed as `~/.imsg-bridge/imsg-ssh-gate`. It is the
-  SSH forced command for the brain key. It runs only `/opt/homebrew/bin/imsg`, never a
-  shell, and blocks `imsg launch`. Tested: imsg allowed; `id`, empty login,
-  `imsg launch`, `;` and `$(...)` injection, and scp all denied.
+  SSH forced command for the brain key. It never starts a shell. Why it is strict: sshd
+  has Full Disk Access, so a free imsg could read ANY file (e.g. `send --file
+  ~/.ssh/id_ed25519`) or delete messages on the personal Apple ID.
+  - argv mode: only `chats`, `history`, `watch`, `send`, `status`; any option whose
+    name has file/path/db/dylib/attach is denied.
+  - rpc mode (OpenClaw uses `imsg rpc`, per its docs): the gate runs `imsg rpc` and
+    filters each JSON-RPC line. Allowed methods: `chats.list`, `messages.history`,
+    `messages.after`, `watch.subscribe`, `watch.unsubscribe`, `send`, `handles.check`.
+    Any param key with file/path/db/dylib/attach (at any depth) is denied.
+  - Denials go to `~/.imsg-bridge/gate.log` (method names only, no message text).
+    If OpenClaw needs a method we did not allow, the log shows it.
+  - Tested 2026-09-13: chats and rpc `chats.list` work; `--file`, `--file=`, `--db`,
+    `send-attachment`, `unsend`, `launch`, `rpc --db`, rpc `message.delete`,
+    `send.attachment`, nested `FilePath` params, batch and non-JSON lines, shell
+    injection, and scp are all denied.
+  - Known gap: attachments are off. `imsg launch` (OpenClaw setup check) is denied.
 - The PC key will be added as:
-  `from="100.123.4.5",command="/Users/mikee/.imsg-bridge/imsg-ssh-gate",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 ...`
+  `from="100.123.4.5",restrict,command="/Users/mikee/.imsg-bridge/imsg-ssh-gate" ssh-ed25519 ...`
+  (`restrict` turns off pty, all forwarding, and ~/.ssh/rc)
 - `scripts/imsg-over-ssh.sh` is the brain-side wrapper. It quotes each argument so text
-  with spaces, quotes, and newlines reaches imsg unchanged (tested on bash 3.2).
+  with spaces, quotes, and newlines reaches imsg unchanged (tested on bash 3.2; not yet
+  on bash 5 or busybox).
 
 Mac host key (check this before trusting the Mac):
 `SHA256:EYJzw5MIsUCYbJ8P9fnDpqeHtUpVkSfd59ekfDo54KA` (ED25519)
@@ -173,12 +188,12 @@ Mac host key (check this before trusting the Mac):
 | # | Who | Step | Status |
 |---|---|---|---|
 | 1 | PC | `git pull` on main | TODO |
-| 2 | PC | Make a key: `ssh-keygen -t ed25519 -N "" -C "pc-brain-imsg" -f <repo>\data\openclaw-ssh\id_ed25519` (data/ is gitignored) | TODO |
+| 2 | PC | Make a key with no passphrase. PowerShell drops `""`, so run it through cmd: `cmd /c 'ssh-keygen -t ed25519 -N "" -C pc-brain-imsg -f <repo>\data\openclaw-ssh\id_ed25519'` (data/ is gitignored). Use a repo path with no spaces | TODO |
 | 3 | PC | Send ONLY the public key: copy `id_ed25519.pub` to `pc-brain-imsg.pub`, `tailscale file cp pc-brain-imsg.pub macbook-air:`, delete the copy. Never send the private key | TODO |
 | 4 | Mac | Install the key with the lock-down line above; send `mac-key-installed.txt` back | TODO |
-| 5 | PC | Build `<repo>\data\openclaw-ssh\known_hosts`: `ssh-keyscan -t ed25519 100.67.66.94`, then `ssh-keygen -lf` on it. STOP if the fingerprint is not the one above | TODO |
+| 5 | PC | Build known_hosts as ASCII (PowerShell `>` writes UTF-16): `ssh-keyscan -t ed25519 100.67.66.94 \| Out-File -Encoding ascii <repo>\data\openclaw-ssh\known_hosts`, then `ssh-keygen -lf` on it. STOP if the fingerprint is not the one above | TODO |
 | 6 | PC | Read-only test from Windows: `ssh -T -i <key> -o IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts> -o StrictHostKeyChecking=yes mikee@100.67.66.94 /opt/homebrew/bin/imsg chats --limit 1`. Expect one chat line. Then run the same with `id` instead of imsg: expect `imsg-ssh-gate: denied` | TODO |
-| 7 | PC | Read-only container check, no restart: `docker exec openclaw sh -c "command -v ssh bash sed; id -u; uname -m"` | TODO |
+| 7 | PC | Read-only container check, no restart: `docker exec openclaw sh -c 'for t in ssh bash sed; do printf "%s=" $t; command -v $t \|\| echo missing; done; id -u; uname -m'`. Also find which imsg rpc methods OpenClaw sends: search the OpenClaw code in the container for `chats.list`, `messages.history`, `watch.subscribe`, `send` and list any other `imsg` method names | TODO |
 | 8 | PC | Send `pc-ssh-status.txt` to macbook-air (format below) | TODO |
 | 9 | Mac | Record results here; remove the local test key if no longer needed | TODO |
 
@@ -194,11 +209,13 @@ container_bash=<path or missing>
 container_sed=<path or missing>
 container_uid=<n>
 container_arch=<arch>
+openclaw_rpc_methods=<comma list, or unknown>
 errors=none|<short text>
 ```
 
 Phase B (later, not in this handoff):
-- Find the sender allowlist for channels.imessage in the OpenClaw docs (BLOCKER).
+- Sender control: OpenClaw docs say iMessage DMs default to pairing mode (`dmPolicy`),
+  so a new sender must be approved first. Confirm it is on before enabling (BLOCKER).
 - Get the key and wrapper into the container. A Windows bind mount shows files as 0777,
   and ssh refuses a private key like that. Plan: copy the key to a container-only path
   with `chmod 600` at start, or install the image's ssh client if it is missing.

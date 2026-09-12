@@ -15,10 +15,11 @@ set -euo pipefail
 # ssh joins arguments with spaces, so quote each one for the gate's shlex parser.
 # Single quotes keep everything literal; an embedded ' becomes '\''.
 # sed instead of ${var//} because bash 3.2 and bash 5 treat quotes there differently.
+# LC_ALL=C stops BSD sed from failing on bytes that are not valid UTF-8.
 # The trailing "x" keeps trailing newlines that $(...) would otherwise strip.
 quoted=""
 for arg in "$@"; do
-  esc=$(printf '%sx' "$arg" | sed "s/'/'\\\\''/g")
+  esc=$(printf '%sx' "$arg" | LC_ALL=C sed "s/'/'\\\\''/g")
   quoted="$quoted '${esc%x}'"
 done
 
@@ -26,4 +27,4 @@ exec ssh -T \
   -i "$IMSG_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
   -o UserKnownHostsFile="$IMSG_SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
   -o ServerAliveInterval=30 \
-  "$IMSG_SSH_TARGET" "/opt/homebrew/bin/imsg${quoted}"
+  -- "$IMSG_SSH_TARGET" "/opt/homebrew/bin/imsg${quoted}"
