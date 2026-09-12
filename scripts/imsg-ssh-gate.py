@@ -29,6 +29,8 @@ LOG = os.path.expanduser("~/.imsg-bridge/gate.log")
 
 ARGV_SUBCOMMANDS = {"chats", "history", "watch", "send", "status"}
 RPC_METHODS = {
+    "initialize",
+    "status",
     "chats.list",
     "messages.history",
     "messages.after",
@@ -37,8 +39,17 @@ RPC_METHODS = {
     "send",
     "handles.check",
 }
+RPC_FLAGS = {"-v", "--verbose", "-j", "--json", "--json-output", "--jsonOutput"}
+LOG_LEVEL_FLAGS = {"--log-level", "--logLevel"}
+LOG_LEVELS = {"trace", "verbose", "debug", "info", "warning", "error", "critical"}
+MAX_LINE = 1024 * 1024
 # Option names and JSON keys that point at files or change what imsg loads.
 RISKY_NAME = re.compile(r"file|path|db|dylib|attach", re.IGNORECASE)
+
+
+def short(value):
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
 
 
 def log(event, detail):
@@ -73,21 +84,63 @@ def has_risky_key(value):
 def run_argv(args):
     sub = args[0]
     if sub not in ARGV_SUBCOMMANDS:
-        deny("subcommand %r is not allowed" % sub)
+        deny("subcommand %s is not allowed" % short(sub))
     for arg in args[1:]:
         if risky_option(arg):
-            deny("option %r is not allowed" % arg.split("=", 1)[0])
+            deny("option %s is not allowed" % short(arg.split("=", 1)[0]))
     os.execv(IMSG, [IMSG] + args)
 
 
-def run_rpc(args):
-    for arg in args:
-        if arg not in ("-v", "--verbose") and not arg.startswith("--log-level"):
-            deny("rpc option %r is not allowed" % arg.split("=", 1)[0])
+def check_rpc_args(args):
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in RPC_FLAGS:
+            i += 1
+            continue
+        name, eq, value = arg.partition("=")
+        if name in LOG_LEVEL_FLAGS:
+            if not eq:
+                value = args[i + 1] if i + 1 < len(args) else ""
+                i += 1
+            if value not in LOG_LEVELS:
+                deny("rpc log level %s is not allowed" % short(value))
+            i += 1
+            continue
+        deny("rpc option %s is not allowed" % short(name))
 
+
+def reject_duplicate_keys(pairs):
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def reject_constant(name):
+    raise ValueError("constant %s" % name)
+
+
+def parse_request(raw):
+    # Parse strictly, then forward our own re-encoding. imsg's JSON parser keeps the
+    # FIRST duplicate key and Python keeps the LAST, so forwarding the raw bytes would
+    # let a request pass the checks as one method and run as another.
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=reject_constant)
+
+
+def run_rpc(args):
+    check_rpc_args(args)
     child = subprocess.Popen([IMSG, "rpc"] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     out = sys.stdout.buffer
     out_lock = threading.Lock()
+
+    def finish(code):
+        try:
+            child.kill()
+        except OSError:
+            pass
+        os._exit(code)
 
     def write_line(data):
         with out_lock:
@@ -95,52 +148,73 @@ def run_rpc(args):
             out.flush()
 
     def pump_child_output():
-        for line in iter(child.stdout.readline, b""):
-            write_line(line)
+        try:
+            for line in iter(child.stdout.readline, b""):
+                write_line(line)
+        except OSError:
+            # The SSH client is gone. Stop imsg instead of letting it block on a full pipe.
+            finish(141)
+        # imsg exited. Exit too, so the brain sees the bridge close and can restart it.
+        finish(child.wait())
 
     pump = threading.Thread(target=pump_child_output, daemon=True)
     pump.start()
 
     def reject(request_id, reason):
         log("deny-rpc", reason)
-        if request_id is None:
-            return
+        # Always answer, with "id": null when there is no usable id, so a client that
+        # waits for a reply does not hang.
         error = {"jsonrpc": "2.0", "id": request_id,
                  "error": {"code": -32601, "message": "imsg-ssh-gate: " + reason}}
-        write_line((json.dumps(error) + "\n").encode())
+        try:
+            write_line((json.dumps(error) + "\n").encode())
+        except OSError:
+            finish(141)
 
-    for raw in iter(sys.stdin.buffer.readline, b""):
+    while True:
+        raw = sys.stdin.buffer.readline(MAX_LINE + 1)
+        if not raw:
+            break
+        if len(raw) > MAX_LINE:
+            log("deny-rpc", "line longer than %d bytes" % MAX_LINE)
+            finish(126)
         if not raw.strip():
             continue
         try:
-            request = json.loads(raw)
-        except ValueError:
-            reject(None, "not JSON")
+            request = parse_request(raw)
+        except ValueError as err:
+            reject(None, "bad JSON: %s" % short(str(err)))
             continue
         if not isinstance(request, dict):
             reject(None, "batch or non-object request")
             continue
         request_id = request.get("id")
+        if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
+            request_id = None
         method = request.get("method")
         if method not in RPC_METHODS:
-            reject(request_id, "method %r is not allowed" % (method,))
+            reject(request_id, "method %s is not allowed" % short(method))
             continue
-        if has_risky_key(request.get("params")):
-            reject(request_id, "file or path parameter in %r" % method)
+        if has_risky_key(request):
+            reject(request_id, "file or path parameter in %s" % short(method))
             continue
         try:
-            child.stdin.write(raw if raw.endswith(b"\n") else raw + b"\n")
+            child.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
             child.stdin.flush()
-        except BrokenPipeError:
+        except OSError:
             break
 
     try:
         child.stdin.close()
-    except BrokenPipeError:
+    except OSError:
         pass
-    code = child.wait()
+    try:
+        code = child.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        code = 124
+    # Let the pump write imsg's last lines. It exits the process itself at EOF.
     pump.join(timeout=5)
-    sys.exit(code)
+    finish(code)
 
 
 def main():
