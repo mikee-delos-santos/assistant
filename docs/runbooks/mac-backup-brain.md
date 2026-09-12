@@ -1,6 +1,7 @@
 # Mac onboarding from scratch: warm-backup brain + iMessage bridge
 
-The Mac has NOT been set up for this project yet. This runbook takes it from zero to:
+Status: the Mac was onboarded on 2026-09-13 through step 8 (see ROADMAP.md). Steps 9-11
+are still pending. This runbook takes it from zero to:
 (a) on the Tailscale network, (b) able to run the OpenClaw brain as a warm backup to
 the PC, and (c) hosting the free iMessage bridge so Mark and his wife can text the
 assistant on whichever brain is active. The Windows PC is already the primary brain.
@@ -9,7 +10,7 @@ Covers AS-3 (epic) and AS-14, AS-15, AS-16, AS-17, AS-33, and ties into AS-12.
 
 ## Running this with Claude Code on the Mac
 The Mac has Claude Code installed. You can open Claude Code on the Mac, tell it to
-read this file (and Jira AS-3 / AS-16), and let it run the command-line steps.
+read this file (and the Ticket details section of ROADMAP.md), and let it run the command-line steps.
 Steps are tagged:
 - [CLI] - a terminal command; Claude Code (or you) can run it.
 - [GUI/You] - needs the GUI, a permission toggle, an app login, or an Apple ID
@@ -59,9 +60,9 @@ Syncthing folder.
 
 ## 6. iMessage bridge (imsg)  [mix - follow imessage-mac-setup.md]
 Do the steps in `docs/runbooks/imessage-mac-setup.md`:
-- `brew install imsg` [CLI]
-- Sign Messages into a DEDICATED free Apple ID = the assistant's identity (so it
-  texts as itself, not as you). [GUI/You]
+- `brew install steipete/tap/imsg` [CLI]
+- Sign Messages into an Apple ID. Prototype: Mark's personal Apple ID (Option A).
+  Real family use: a dedicated Apple ID (Option B, see ROADMAP.md). [GUI/You]
 - Enable Remote Login: System Settings > General > Sharing > Remote Login = On. [GUI/You]
 - Grant Full Disk Access + Automation to the terminal/imsg process. [GUI/You]
 - Verify: `imsg chats --limit 1` lists a chat. [CLI]
@@ -72,12 +73,14 @@ Do the steps in `docs/runbooks/imessage-mac-setup.md`:
    (exchange device IDs). [GUI/You]
 3. Share ONLY the PC's memory folder `data/openclaw/workspace` into the Mac at
    `~/workspace/assistant/data/openclaw/workspace`. Add `config/openclaw-home.stignore`
-   as that folder's `.stignore` (excludes the SQLite index and logs). [GUI/You]
+   as that folder's `.stignore` on BOTH hosts (.stignore does not sync). The SQLite
+   index lives outside the workspace folder, so it is not shared anyway. [GUI/You]
 4. Verify memory files appear on the Mac and update within seconds when the PC changes
    them. [CLI: `ls ~/workspace/assistant/data/openclaw/workspace`]
 
 Do NOT sync `.env` or `openclaw.json` - config and secrets stay per-host. That is
-what lets the Mac wire iMessage to LOCAL imsg while the PC wires it to SSH-to-Mac.
+what lets each host point cliPath at its own SSH target: the Mac container uses
+SSH to host.docker.internal, the PC uses SSH to the Mac over the tailnet.
 
 ## 8. STOP - do not start the container yet
 The PC is the active brain. Starting the Mac container now = two brains writing the
@@ -86,17 +89,25 @@ same memory = split-brain. Leave the Mac container stopped until an actual failo
 ## 9. Failover - promote the Mac to brain (only when the PC is down)  [CLI]
 1. Confirm the PC gateway is actually stopped (avoid two brains).
 2. `cd ~/workspace/assistant && docker compose up -d`
-   (The SQLite index rebuilds from the synced Markdown on first start. The Mac's
-   local imsg means iMessage keeps working.)
-3. Point the Mac's iMessage cliPath at LOCAL imsg (not SSH). Claude can set it:
-   `docker compose exec -T openclaw openclaw config set channels.imessage.cliPath <local-imsg-path>`
-   (confirm the exact key/path against https://docs.openclaw.ai/channels/imessage).
+   (Expected: the SQLite index rebuilds from the synced Markdown on first start.
+   Verify this in the drill.)
+3. Point the Mac container's iMessage cliPath at an SSH wrapper, NOT at a local imsg.
+   The container runs Linux and cannot run the macOS imsg binary, so
+   /opt/homebrew/bin/imsg does not exist inside it. The wrapper inside the container:
+   ```
+   #!/usr/bin/env bash
+   exec ssh -T <mac-user>@host.docker.internal /opt/homebrew/bin/imsg "$@"
+   ```
+   The container needs an ssh client and a key for the Mac user. Then set
+   `channels.imessage.cliPath` to the wrapper path (check the key names against
+   https://docs.openclaw.ai/channels/imessage/setup). This path has the same -1743
+   send risk as the PC (see ROADMAP.md).
 4. Reach it over Tailscale (Control UI / `tailscale serve`) or
    `docker exec -it openclaw openclaw chat`.
 5. When the PC returns: `docker compose stop openclaw` on the Mac, let Syncthing
    reconcile, then start the PC brain again.
 
-## 10. Prefer waking the PC over failing over (AS-33)  [CLI]
+## 10. Prefer waking the PC over failing over (AS-33)  [CLI]  (DEFERRED 2026-09-13, not set up)
 For short PC outages, wake it instead of promoting the Mac: `scripts/wake-pc.sh`
 (fill in the PC's MAC address first; needs WoL enabled in the PC BIOS/NIC).
 
@@ -107,9 +118,10 @@ secrets) to an external drive or owned storage. Verify a restore actually works.
 ---
 
 ## Cross-brain iMessage recap
-One assistant Apple ID. The imsg bridge lives on the always-on Mac. The active brain
-connects to it - the PC brain over SSH/Tailscale, the Mac brain locally. Family texts
-the one assistant identity; whichever brain is up answers. Exactly one brain runs at
+One Apple ID signed into Messages on the Mac: Mark's personal one for the prototype
+(Option A), a dedicated one later (Option B). The imsg bridge lives on the always-on
+Mac. The active brain connects to it over SSH - the PC brain over the tailnet, the Mac
+brain from its container to host.docker.internal. Whichever brain is up answers. Exactly one brain runs at
 a time. Reminders and briefings (AS-34) go out over the same iMessage channel, from
 the assistant's identity.
 
