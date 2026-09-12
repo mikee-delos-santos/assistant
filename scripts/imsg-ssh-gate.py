@@ -180,26 +180,29 @@ def run_rpc(args):
             finish(126)
         if not raw.strip():
             continue
+        request_id = None
         try:
             request = parse_request(raw)
-        except ValueError as err:
-            reject(None, "bad JSON: %s" % short(str(err)))
-            continue
-        if not isinstance(request, dict):
-            reject(None, "batch or non-object request")
-            continue
-        request_id = request.get("id")
-        if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
-            request_id = None
-        method = request.get("method")
-        if method not in RPC_METHODS:
-            reject(request_id, "method %s is not allowed" % short(method))
-            continue
-        if has_risky_key(request):
-            reject(request_id, "file or path parameter in %s" % short(method))
+            if not isinstance(request, dict):
+                reject(None, "batch or non-object request")
+                continue
+            request_id = request.get("id")
+            if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
+                request_id = None
+            method = request.get("method")
+            if not isinstance(method, str) or method not in RPC_METHODS:
+                reject(request_id, "method %s is not allowed" % short(method))
+                continue
+            if has_risky_key(request):
+                reject(request_id, "file or path parameter in %s" % short(method))
+                continue
+            line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
+        except Exception as err:
+            # Any surprise (deep nesting, 1e400, odd types) is a denial, never a crash.
+            reject(request_id, "bad request: %s" % short("%s: %s" % (type(err).__name__, err)))
             continue
         try:
-            child.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+            child.stdin.write(line.encode())
             child.stdin.flush()
         except OSError:
             break
