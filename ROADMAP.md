@@ -91,7 +91,7 @@ Runbook: docs/runbooks/chores-mcp-integration.md
 ## Channels & persona
 | Task | Status | Notes |
 |---|---|---|
-| iMessage family channel (free, imsg over Tailscale) | WIP | prototype on personal Apple ID (Option A); Mac side installed, imsg reads chats; SSH send (-1743) not tested yet |
+| iMessage family channel (free, imsg over Tailscale) | WIP | prototype on personal Apple ID (Option A); Mac side installed; SSH round trip PASSED 2026-09-13 (send + read over SSH to the Mac itself); PC-side wrapper not set up yet |
 | Assistant name / persona + dedicated Apple ID (Option B) | TODO | future; move off the personal Apple ID before real family use |
 | iPhone device pairing to the PC brain | TODO | open tailnet URL, pair, approve on PC |
 
@@ -118,9 +118,14 @@ Option B - dedicated free Apple ID for the assistant (FUTURE)
     user session may also fail with -1743.
 
 ## Open technical risks (found during Mac onboarding)
-- SSH send may fail. OpenClaw docs list "Not authorized to send Apple events to
-  Messages. (-1743)" for SSH wrappers. Their fix is to run the imsg bridge in the
-  logged-in user's session. Test a send over SSH before trusting the PC-to-Mac design.
+- SSH send (-1743): TESTED 2026-09-13 and it WORKS. OpenClaw docs warn about "Not
+  authorized to send Apple events to Messages. (-1743)" for SSH wrappers. On this Mac,
+  `ssh mikee@127.0.0.1 /opt/homebrew/bin/imsg send` delivered an iMessage to Mark's
+  wife, and `imsg history` over SSH read her reply. Not tested yet: SSH from the PC over
+  the tailnet, SSH from a container via host.docker.internal, and after a Mac reboot
+  or while the screen is locked. The Mac user must stay logged in.
+- A local-only test key exists on the Mac: ~/.ssh/id_ed25519_imsg_bridge_local, in
+  authorized_keys with from="127.0.0.1,::1". Remove it once the PC key is in place.
 - The Mac brain cannot run imsg "locally". Docker on macOS runs Linux, and imsg is a
   macOS binary. A containerized Mac brain must also reach the Mac host over SSH
   (e.g. host.docker.internal), so the -1743 risk applies to both brains.
@@ -137,7 +142,7 @@ Option B - dedicated free Apple ID for the assistant (FUTURE)
   Syncthing upgrade.
 - SSH sessions need their own Full Disk Access entry
   (/usr/libexec/sshd-keygen-wrapper). The terminal's permission does not cover them.
-  Not granted yet. Only Warp has Full Disk Access so far.
+  Already granted: imsg read chat.db over SSH on 2026-09-13.
 - Over SSH, call imsg by full path (/opt/homebrew/bin/imsg). A non-interactive SSH
   command does not load the Homebrew PATH.
 
@@ -213,8 +218,8 @@ the Mac can drive it). Covers Mac setup (Docker, Syncthing memory-only mirror, p
 config/secrets), failover, Wake-on-LAN (deferred), encrypted backup, and the cross-brain
 iMessage design.
 
-Blocker: the SSH send test (-1743) must pass before the drill can prove iMessage works
-on both brains.
+The SSH send test (-1743) passed on the Mac itself (2026-09-13). Still to test before
+the drill: the same send from the PC over the tailnet, and from the Mac container.
 
 Remaining to close: run a real drill (stop PC brain, start Mac brain, confirm memory
 current + iMessage still works, then fail back).
