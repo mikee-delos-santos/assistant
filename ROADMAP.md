@@ -94,3 +94,72 @@ Runbook: docs/runbooks/chores-mcp-integration.md
 - docs/runbooks/imessage-mac-setup.md - free iMessage via imsg over Tailscale
 - docs/runbooks/chores-mcp-integration.md - Chores app MCP wiring
 - docs/decisions/0001-architecture.md - architecture decisions
+
+---
+
+# Ticket details (full specs)
+
+Full detail for the three key coordination items, kept here so nothing depends on
+Jira. AS-xx are historical labels only.
+
+## AS-3 - Sync and failover: PC primary, Mac warm backup  (status: TODO)
+Phase 2. Mirror the brain memory from the PC to the Mac so the Mac can take over as
+backup brain, AND ensure the family can iMessage whichever brain is active.
+
+Goal (per Mark): Mark and his wife text the assistant from their phones and get tasks
+done regardless of which brain is running it. The iMessage bridge (imsg) lives on the
+always-on Mac; the active brain connects to it - the PC brain over SSH/Tailscale, the
+Mac brain locally. Exactly one brain runs at a time, so exactly one owns the iMessage
+connection.
+
+Approach: sync ONLY the Markdown memory workspace (the source of truth) via Syncthing;
+keep openclaw.json and .env per-host so each machine wires iMessage with the correct
+cliPath; the SQLite index is derived and rebuilt on failover.
+
+Runbook: docs/runbooks/mac-backup-brain.md (and imessage-mac-setup.md).
+
+Sub-tasks: Syncthing mirror; SQLite exclude/rebuild; failover runbook + drill;
+encrypted backup; Wake-on-LAN.
+
+Exit criteria: near-real-time memory mirror on both machines; a tested failover;
+iMessage works from both PC-active and Mac-active states.
+
+## AS-12 - iMessage family channel (free) via imsg over Tailscale  (status: TODO)
+Free iMessage channel for the family - $0, no paid API. The Mac is the Apple bridge;
+the brain stays on the PC.
+
+Approach: OpenClaw's iMessage channel uses the free imsg CLI on the Mac, which reads
+~/Library/Messages/chat.db and sends via Messages.app. The PC gateway calls imsg on
+the Mac over Tailscale via SSH (attachments via SCP). imsg, iMessage, Tailscale, and
+SSH are all free.
+
+Mac-side (Mark, at the machine): install Homebrew + imsg, sign Messages into a
+dedicated free Apple ID (so the assistant is its own contact, not Mark), enable Remote
+Login, grant Full Disk Access + Automation, verify `imsg chats --limit 1`.
+
+PC-side (Claude): passwordless SSH key PC->Mac over Tailscale, a cliPath wrapper that
+runs imsg over SSH, set channels.imessage.cliPath + enable the channel, restart the
+gateway, test.
+
+Cross-brain requirement: family must be able to iMessage whichever brain is active.
+One assistant Apple ID; the imsg bridge lives on the always-on Mac; the active brain
+connects to it - PC brain over SSH/Tailscale, Mac brain locally (per-host cliPath,
+since config is not synced). Exactly one brain runs at a time.
+
+Catches: dedicated Apple ID recommended; fragile across macOS updates/reboots (Full
+Disk Access resets); Apple gray area (not sanctioned, fine with Anthropic and free);
+Full Disk Access is powerful. Runbook: docs/runbooks/imessage-mac-setup.md.
+
+## AS-16 - Write and test the failover runbook (one-brain-at-a-time)  (status: WIP)
+Document the steps to promote the Mac to backup brain when the PC is down, including
+the hard rule that only one brain runs at a time. Do a real drill: stop the PC brain,
+start the Mac brain, confirm memory is current, then fail back.
+
+Progress: runbook prepared and committed - docs/runbooks/mac-backup-brain.md (now a
+full from-scratch Mac onboarding, steps tagged [CLI] vs [GUI/You] so Claude Code on
+the Mac can drive it). Covers Mac setup (Docker, Syncthing memory-only mirror, per-host
+config/secrets), failover, Wake-on-LAN, encrypted backup, and the cross-brain iMessage
+design.
+
+Remaining to close: run a real drill (stop PC brain, start Mac brain, confirm memory
+current + iMessage still works, then fail back).
