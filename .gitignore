@@ -8,6 +8,7 @@
 secrets/
 
 # OpenClaw runtime data (PII) - never commit
+data/
 .openclaw/
 workspace/
 *.sqlite
