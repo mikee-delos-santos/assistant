@@ -124,9 +124,7 @@ Option B - dedicated free Apple ID for the assistant (FUTURE)
   wife, and `imsg history` over SSH read her reply. Not tested yet: SSH from the PC over
   the tailnet, SSH from a container via host.docker.internal, and after a Mac reboot
   or while the screen is locked. The Mac user must stay logged in.
-- A local-only test key exists on the Mac: ~/.ssh/id_ed25519_imsg_bridge_local, in
-  authorized_keys with from="127.0.0.1,::1" and the imsg gate as forced command.
-  Remove it once the PC key is in place.
+- The Mac's local test key was removed on 2026-09-13 after the PC key worked.
 - The Mac brain cannot run imsg "locally". Docker on macOS runs Linux, and imsg is a
   macOS binary. A containerized Mac brain must also reach the Mac host over SSH
   (e.g. host.docker.internal), so the -1743 risk applies to both brains.
@@ -147,7 +145,7 @@ Option B - dedicated free Apple ID for the assistant (FUTURE)
 - Over SSH, call imsg by full path (/opt/homebrew/bin/imsg). A non-interactive SSH
   command does not load the Homebrew PATH.
 
-## Handoff: wire the PC brain to imsg over SSH  (status: WIP, started 2026-09-13)
+## Handoff: wire the PC brain to imsg over SSH  (status: Phase A DONE 2026-09-13, Phase B TODO)
 Coordination: Mac Claude and PC Claude follow this section. Files that must not go in
 git move over Taildrop (`tailscale file cp <file> <host>:`). Each side updates this
 section when its part is done. Nobody sends an iMessage in this handoff.
@@ -199,7 +197,7 @@ Mac host key (check this before trusting the Mac):
 | 6 | PC | Read-only tests from Windows. Block C below | DONE - imsg read over SSH = ok; gate denies `id` ("only imsg may run") |
 | 7 | PC | Read-only container check, no restart. Block D below. Also search the OpenClaw code in the container for the imsg rpc method names it sends (e.g. `chats.list`, `messages.history`, `watch.subscribe`, `send`, `initialize`) | DONE - container: bash+sed present, ssh MISSING, uid 1000, x86_64; rpc methods used = chats.list, messages.history, watch.subscribe, watch.unsubscribe (all in the gate allowlist) |
 | 8 | PC | Send `pc-ssh-status.txt` to macbook-air (format below) | DONE - sent via Taildrop |
-| 9 | Mac | Record results here; remove the local test key if no longer needed | TODO (Mac) |
+| 9 | Mac | Record results here; remove the local test key if no longer needed | DONE - results recorded; Mac test key removed, the PC key is the only imsg key |
 
 PC status 2026-09-13 (PC Claude): steps 1-3 DONE. PC public key fingerprint
 `SHA256:VsIK/J2FGcRSVhixQgNs552QC/pwgSFBCug6FFU00Yo` (`pc-brain-imsg`); public key
@@ -220,6 +218,16 @@ Two findings for Phase B:
    wrapper `scripts/imsg-over-ssh.sh` and any container ssh must include this.
 2. The container has NO ssh client. Phase B must add an ssh client to the image (or
    bridge to the Mac another way) before `channels.imessage.cliPath` can call imsg.
+
+Mac notes 2026-09-13 (Mac Claude):
+- gate.log on the Mac shows the PC's `id` test as a denial, so the from-IP match and the
+  forced command both work over the tailnet.
+- The Mac local test key is removed. `~/.ssh/authorized_keys` now holds only the PC key.
+- KEX note correction: the curve25519 option is needed for the Windows OpenSSH client.
+  A Linux OpenSSH client in the container (9.x) supports sntrup761x25519, so the wrapper
+  should not force it by default. Add it only if the container test fails.
+- How OpenClaw sends (rpc `send` or `imsg send`) is still unknown. The first send attempt
+  shows up in `~/.imsg-bridge/gate.log` if the gate blocks it.
 
 Commands for the PC (PowerShell, run from the repo folder; the repo path must have no
 spaces):
@@ -273,6 +281,9 @@ errors=none|<short text>
 Phase B (later, not in this handoff):
 - Sender control: OpenClaw docs say iMessage DMs default to pairing mode (`dmPolicy`),
   so a new sender must be approved first. Confirm it is on before enabling (BLOCKER).
+- Add an ssh client to the container (it has none). Options: a small custom image
+  (`FROM ghcr.io/openclaw/openclaw:<pinned>` + `openssh-client`), or install at start.
+  Pin the base image first (docker-compose.yml still uses `:latest`).
 - Get the key and wrapper into the container. A Windows bind mount shows files as 0777,
   and ssh refuses a private key like that. Plan: copy the key to a container-only path
   with `chmod 600` at start, or install the image's ssh client if it is missing.
