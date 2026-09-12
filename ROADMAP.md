@@ -16,7 +16,8 @@ Status legend: DONE | WIP (in progress) | TODO | DEFERRED
 - Reachable on the PC now: `docker exec -it openclaw openclaw chat`.
 - Phone access is published over Tailscale (tailnet-only):
   http://desktop-3p37btg.taila8a422.ts.net:18789/ - iPhone device pairing still to approve.
-- The Mac has not been onboarded yet; from-scratch runbook is ready.
+- The Mac is on the tailnet (macbook-air / 100.67.66.94, online) and its Claude Code is driving the Mac side. PC-side Syncthing is set up and awaiting the Mac to accept the device/folder.
+- OPEN: PC Windows Firewall inbound TCP 22000 rule needs an elevated shell (run: New-NetFirewallRule -DisplayName 'Syncthing 22000' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 22000 -Profile Private).
 - Assistant name / persona: NOT chosen yet (it becomes the iMessage contact name).
 
 ## Architecture (see docs/decisions/0001-architecture.md)
@@ -46,8 +47,8 @@ Opus escalation for hard/agentic tasks. Data lives only on the two machines.
 Runbook: docs/runbooks/mac-backup-brain.md (full from-scratch Mac onboarding).
 | Task | Status | Notes |
 |---|---|---|
-| Syncthing mirror of the Markdown memory | TODO | memory-only; config/secrets per-host |
-| Exclude SQLite index, rebuild on failover | TODO | config/openclaw-home.stignore |
+| Syncthing mirror of the Markdown memory | WIP | PC side DONE (Syncthing v2.1.5; folder openclaw-workspace shared with macbook-air; global-announce+relays off, local on; autostart at logon). Mac to accept device+folder. PC firewall inbound TCP 22000 rule still needs an elevated shell. |
+| Exclude SQLite index, rebuild on failover | DONE | `.stignore` placed in the synced workspace before first sync |
 | Failover runbook + real drill | WIP | runbook written; drill pending |
 | Encrypted backup of the workspace | TODO | |
 | Wake-on-LAN (Mac wakes PC) | TODO | scripts/wake-pc.sh (fill MAC) |
