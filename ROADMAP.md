@@ -191,15 +191,24 @@ Mac host key (check this before trusting the Mac):
 
 | # | Who | Step | Status |
 |---|---|---|---|
-| 1 | PC | `git pull` on main | TODO |
-| 2 | PC | Make the key folder and a key with no passphrase. Commands in block A below | TODO |
-| 3 | PC | Send ONLY the public key: copy `id_ed25519.pub` to `pc-brain-imsg.pub`, `tailscale file cp pc-brain-imsg.pub macbook-air:`, delete the copy. Never send the private key | TODO |
+| 1 | PC | `git pull` on main | DONE (2026-09-13) |
+| 2 | PC | Make the key folder and a key with no passphrase. Commands in block A below | DONE - key at data\openclaw-ssh\id_ed25519 (gitignored) |
+| 3 | PC | Send ONLY the public key: copy `id_ed25519.pub` to `pc-brain-imsg.pub`, `tailscale file cp pc-brain-imsg.pub macbook-air:`, delete the copy. Never send the private key | DONE - sent to macbook-air via Taildrop |
 | 4 | Mac | Install the key with the lock-down line above; send `mac-key-installed.txt` back | TODO |
 | 5 | PC | Build known_hosts and check the Mac fingerprint. Block B below. STOP if it is not the one above | TODO |
 | 6 | PC | Read-only tests from Windows. Block C below | TODO |
 | 7 | PC | Read-only container check, no restart. Block D below. Also search the OpenClaw code in the container for the imsg rpc method names it sends (e.g. `chats.list`, `messages.history`, `watch.subscribe`, `send`, `initialize`) | TODO |
 | 8 | PC | Send `pc-ssh-status.txt` to macbook-air (format below) | TODO |
 | 9 | Mac | Record results here; remove the local test key if no longer needed | TODO |
+
+PC status 2026-09-13 (PC Claude): steps 1-3 DONE. PC public key fingerprint
+`SHA256:VsIK/J2FGcRSVhixQgNs552QC/pwgSFBCug6FFU00Yo` (`pc-brain-imsg`); public key
+delivered to macbook-air via Taildrop. Private key lives at
+`data\openclaw-ssh\id_ed25519` (gitignored, never sent). BLOCKED on step 4 - Mac to
+install the key with the lock-down line and send `mac-key-installed.txt` back. Once
+that arrives, PC will run steps 5-8 (known_hosts + fingerprint check against
+`SHA256:EYJzw5MIsUCYbJ8P9fnDpqeHtUpVkSfd59ekfDo54KA`, read-only imsg tests, container
+check, then send `pc-ssh-status.txt`). No iMessage sent; container untouched.
 
 Commands for the PC (PowerShell, run from the repo folder; the repo path must have no
 spaces):
