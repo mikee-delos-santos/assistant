@@ -12,13 +12,23 @@ Two modes:
   filters every newline-framed JSON-RPC request on stdin by method allowlist.
   A request with a file or path parameter anywhere in it is denied.
 
+Visibility filter (rpc responses): Messages on this Mac used to be signed in to
+Mark's personal Apple ID, and chat.db still holds that history. The gate passes only
+messages on the assistant's own iMessage account (handles in
+~/.imsg-bridge/assistant.json) sent or received after the switch. Every chat,
+message, and watch notification that imsg returns is checked against chat.db.
+If the config is missing or a check fails, the gate hides the data (fail closed).
+argv mode cannot be filtered, so it allows only `send` and `status`.
+
 The gate never starts a shell. Denials are logged with the method or subcommand
 name only, never message text, so the allowlist can be tuned from the log.
 """
+import calendar
 import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -26,8 +36,18 @@ import time
 
 IMSG = "/opt/homebrew/bin/imsg"
 LOG = os.path.expanduser("~/.imsg-bridge/gate.log")
+CONFIG = os.path.expanduser("~/.imsg-bridge/assistant.json")
+CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
+APPLE_EPOCH = 978307200
+# Keys that carry message content. Unknown output holding any of them is hidden.
+CONTENT_KEYS = {"text", "message", "messages", "chats", "reply_to_text", "attachments"}
+SQL_CHUNK = 500
+# visible_since_utc must fall in this window. A typo that moves it earlier would expose
+# old rows whose destination happens to be an assistant handle.
+CUTOFF_FLOOR_UTC = "2026-09-13T00:00:00Z"
 
-ARGV_SUBCOMMANDS = {"chats", "history", "watch", "send", "status"}
+# chats/history/watch print plain text the visibility filter cannot check.
+ARGV_SUBCOMMANDS = {"send", "status"}
 RPC_METHODS = {
     "initialize",
     "status",
@@ -37,7 +57,6 @@ RPC_METHODS = {
     "watch.subscribe",
     "watch.unsubscribe",
     "send",
-    "handles.check",
 }
 RPC_FLAGS = {"-v", "--verbose", "-j", "--json", "--json-output", "--jsonOutput"}
 LOG_LEVEL_FLAGS = {"--log-level", "--logLevel"}
@@ -79,6 +98,141 @@ def has_risky_key(value):
     if isinstance(value, list):
         return any(has_risky_key(v) for v in value)
     return False
+
+
+def contains_content(value):
+    if isinstance(value, dict):
+        return any(k in CONTENT_KEYS or contains_content(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(contains_content(v) for v in value)
+    return False
+
+
+class Visibility:
+    """Which chat.db rows the brain may see: messages on the assistant account only."""
+
+    MATCH = ("m.date >= ? and (lower(coalesce(m.account, '')) in ({accounts})"
+             " or lower(coalesce(m.destination_caller_id, '')) in ({handles}))")
+
+    def __init__(self):
+        self.handles = []
+        self.accounts = []
+        self.cutoff_ns = None
+        try:
+            with open(CONFIG) as fh:
+                cfg = json.load(fh)
+            handles = sorted({str(h).strip().lower() for h in cfg["assistant_handles"]} - {""})
+            since = calendar.timegm(time.strptime(cfg["visible_since_utc"], "%Y-%m-%dT%H:%M:%SZ"))
+            floor = calendar.timegm(time.strptime(CUTOFF_FLOOR_UTC, "%Y-%m-%dT%H:%M:%SZ"))
+            if since < floor or since > time.time() + 86400:
+                raise ValueError("visible_since_utc outside the allowed window")
+            self.cutoff_ns = (since - APPLE_EPOCH) * 1000000000
+            self.handles = handles
+            # chat.db stores the account as "E:<email>" or "P:<phone>".
+            self.accounts = [("e:" if "@" in h else "p:") + h for h in handles]
+        except (OSError, ValueError, KeyError, TypeError) as err:
+            self.handles, self.accounts, self.cutoff_ns = [], [], None
+            log("config", "visibility config unusable, all reads hidden: %s" % short(str(err)))
+        self._conn = None
+
+    def _select(self, sql, keys):
+        if not keys or not self.handles or self.cutoff_ns is None:
+            return set()
+        found = set()
+        if self._conn is None:
+            self._conn = sqlite3.connect("file:%s?mode=ro" % CHAT_DB, uri=True, timeout=5,
+                                         check_same_thread=False)
+        conn = self._conn
+        try:
+            for i in range(0, len(keys), SQL_CHUNK):
+                chunk = keys[i:i + SQL_CHUNK]
+                query = sql.format(keys=",".join("?" * len(chunk))) % self.MATCH.format(
+                    accounts=",".join("?" * len(self.accounts)),
+                    handles=",".join("?" * len(self.handles)))
+                args = chunk + [self.cutoff_ns] + self.accounts + self.handles
+                found.update(row[0] for row in conn.execute(query, args))
+        except sqlite3.Error:
+            # Reopen next time. The caller hides the data for this reply.
+            self._conn = None
+            conn.close()
+            raise
+        return found
+
+    @staticmethod
+    def _ints(values):
+        return sorted({v for v in values if isinstance(v, int) and not isinstance(v, bool)})
+
+    def visible_message_ids(self, ids):
+        return self._select("select m.ROWID from message m where m.ROWID in ({keys}) and %s",
+                            self._ints(ids))
+
+    def visible_guids(self, guids):
+        return self._select("select m.guid from message m where m.guid in ({keys}) and %s",
+                            sorted({g for g in guids if isinstance(g, str)}))
+
+    def visible_chat_ids(self, ids):
+        return self._select(
+            "select distinct j.chat_id from chat_message_join j join message m"
+            " on m.ROWID = j.message_id where j.chat_id in ({keys}) and %s",
+            self._ints(ids))
+
+    def filter_messages(self, items):
+        items = [m for m in items if isinstance(m, dict)]
+        allowed = self.visible_message_ids([m.get("id") for m in items])
+        kept = [m for m in items if m.get("id") in allowed]
+        replies = self.visible_guids([m.get("reply_to_guid") for m in kept])
+        for m in kept:
+            # A new message can quote an old personal one. Hide the quote.
+            if m.get("reply_to_guid") and m.get("reply_to_guid") not in replies:
+                m["reply_to_text"] = None
+                m["reply_to_sender"] = None
+        return kept
+
+    def filter_result(self, result):
+        """Filter by shape, never by which method the reply claims to answer."""
+        if not isinstance(result, dict):
+            return None if contains_content(result) else result
+        if "chats" in result:
+            chats = [c for c in result.get("chats") or [] if isinstance(c, dict)]
+            allowed = self.visible_chat_ids([c.get("id") for c in chats])
+            result["chats"] = [c for c in chats if c.get("id") in allowed]
+        if "messages" in result:
+            result["messages"] = self.filter_messages(result.get("messages") or [])
+        rest = {k: v for k, v in result.items() if k not in ("chats", "messages")}
+        if contains_content(rest):
+            log("hide", "unexpected content keys in a result")
+            return {k: result[k] for k in ("chats", "messages") if k in result}
+        return result
+
+    def filter_response(self, response):
+        if "result" in response:
+            response["result"] = self.filter_result(response["result"])
+        if contains_content(response.get("error")):
+            log("hide", "content in an error")
+            response["error"] = {"code": -32000, "message": "imsg-ssh-gate: error hidden"}
+        rest = {k: v for k, v in response.items() if k not in ("result", "error")}
+        if contains_content(rest):
+            log("hide", "content outside result")
+            return {k: response[k] for k in ("jsonrpc", "id", "result", "error") if k in response}
+        return response
+
+    def filter_notification(self, note):
+        params = note.get("params")
+        if note.get("method") == "message" and isinstance(params, dict):
+            kept = self.filter_messages([params.get("message")])
+            if not kept:
+                return None
+            others = {k: v for k, v in note.items() if k != "params"}
+            other_params = {k: v for k, v in params.items() if k != "message"}
+            if contains_content(others) or contains_content(other_params):
+                log("hide", "content outside params.message")
+                return None
+            params["message"] = kept[0]
+            return note
+        if contains_content(params):
+            log("hide", "content in %s notification" % short(note.get("method")))
+            return None
+        return note
 
 
 def run_argv(args):
@@ -131,6 +285,7 @@ def parse_request(raw):
 
 def run_rpc(args):
     check_rpc_args(args)
+    visibility = Visibility()
     child = subprocess.Popen([IMSG, "rpc"] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     out = sys.stdout.buffer
     out_lock = threading.Lock()
@@ -147,10 +302,39 @@ def run_rpc(args):
             out.write(data)
             out.flush()
 
+    def filter_line(line):
+        try:
+            message = json.loads(line.decode("utf-8"))
+        except ValueError:
+            log("hide", "non-JSON line from imsg")
+            return None
+        if not isinstance(message, dict):
+            log("hide", "non-object line from imsg")
+            return None
+        response_id = message.get("id")
+        is_response = "method" not in message
+        try:
+            if is_response:
+                message = visibility.filter_response(message)
+            else:
+                message = visibility.filter_notification(message)
+                if message is None:
+                    return None
+            return (json.dumps(message, separators=(",", ":")) + "\n").encode()
+        except Exception as err:
+            log("hide", "filter error: %s" % short("%s: %s" % (type(err).__name__, err)))
+            if not is_response:
+                return None
+            error = {"jsonrpc": "2.0", "id": response_id,
+                     "error": {"code": -32000, "message": "imsg-ssh-gate: result hidden"}}
+            return (json.dumps(error) + "\n").encode()
+
     def pump_child_output():
         try:
             for line in iter(child.stdout.readline, b""):
-                write_line(line)
+                filtered = filter_line(line)
+                if filtered is not None:
+                    write_line(filtered)
         except OSError:
             # The SSH client is gone. Stop imsg instead of letting it block on a full pipe.
             finish(141)
@@ -188,7 +372,8 @@ def run_rpc(args):
                 continue
             request_id = request.get("id")
             if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
-                request_id = None
+                reject(None, "request id must be an integer or a string")
+                continue
             method = request.get("method")
             if not isinstance(method, str) or method not in RPC_METHODS:
                 reject(request_id, "method %s is not allowed" % short(method))
