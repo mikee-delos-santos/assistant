@@ -226,9 +226,23 @@ class Visibility:
     def filter_response(self, response):
         if "result" in response:
             response["result"] = self.filter_result(response["result"])
-        if contains_content(response.get("error")):
-            log("hide", "content in an error")
-            response["error"] = {"code": -32000, "message": "imsg-ssh-gate: error hidden"}
+        error = response.get("error")
+        if error is not None:
+            # A JSON-RPC error's "message" is error text, not an iMessage. Keep code and
+            # message (short), log them so failures can be fixed, and drop "data", which
+            # could echo a request or a message row.
+            code = error.get("code") if isinstance(error, dict) else None
+            text = error.get("message") if isinstance(error, dict) else None
+            text = text[:300] if isinstance(text, str) else "error"
+            data = error.get("data") if isinstance(error, dict) else None
+            clean = {"code": code if isinstance(code, int) else -32000, "message": text}
+            # imsg puts the reason in a short string "data" (e.g. "unknown send param: x").
+            # Keep only a short string; drop objects that could hold message rows.
+            if isinstance(data, str):
+                clean["data"] = data[:300]
+            log("imsg-error", "code=%s %s | %s" % (short(code), text[:120],
+                                                   data[:200] if isinstance(data, str) else "-"))
+            response["error"] = clean
         rest = {k: v for k, v in response.items() if k not in ("result", "error")}
         if contains_content(rest):
             log("hide", "content outside result")
