@@ -422,12 +422,12 @@ What happened on retry 1 (Mac view):
 
 | # | Who | Step | Status |
 |---|---|---|---|
-| R1 | PC | `git pull`, then `docker compose restart openclaw` (a new bridge session picks up the fixed gate) | TODO |
-| R2 | PC | Confirm the iMessage provider starts and stays up (no restart loop) | TODO |
-| R3 | PC | Tell Mark to text the assistant number again from his iPhone | TODO |
-| R4 | PC | If no reply: read the OpenClaw log for the reply attempt and copy only the error text (the gate now passes imsg's reason, e.g. `Invalid params` + `unknown send param: x`). No handles, no message text | TODO |
-| R5 | PC | Check which method OpenClaw used to reply: rpc `send`, `send.tracked`, or argv `imsg send` / `send-rich`. The gate allows only rpc `send` and argv `send` | TODO |
-| R6 | PC | Send `pc-optionb-status.txt` to macbook-air with R2-R5 results. The Mac Claude also reads `~/.imsg-bridge/gate.log`, which now logs `imsg-error code=... message | reason` | TODO |
+| R1 | PC | `git pull`, then `docker compose restart openclaw` (a new bridge session picks up the fixed gate) | DONE |
+| R2 | PC | Confirm the iMessage provider starts and stays up (no restart loop) | DONE - up + stable; no rpc --help / attachments denials; watch.subscribe OK; no restart loop |
+| R3 | PC | Tell Mark to text the assistant number again from his iPhone | DONE - Mark texted; inbound received; Sonnet reply generated |
+| R4 | PC | If no reply: read the OpenClaw log for the reply attempt and copy only the error text (the gate now passes imsg's reason, e.g. `Invalid params` + `unknown send param: x`). No handles, no message text | DONE - outbound FAILED: "OutboundDeliveryError: Delivery failed before dispatch: code=-32603" (JSON-RPC internal error; reply not delivered) |
+| R5 | PC | Check which method OpenClaw used to reply: rpc `send`, `send.tracked`, or argv `imsg send` / `send-rich`. The gate allows only rpc `send` and argv `send` | PARTIAL - method not shown in PC logs at default verbosity; Mac gate.log has method+reason. Hypotheses: rich-send unsupported on this Mac (no SIP/dylib) with no fallback, or rpc send param (region PH/+63, or reply_to threaded needs bridge) |
+| R6 | PC | Send `pc-optionb-status.txt` to macbook-air with R2-R5 results. The Mac Claude also reads `~/.imsg-bridge/gate.log`, which now logs `imsg-error code=... message | reason` | DONE - sent to macbook-air (no handles/text). Awaiting Mac to read gate.log and tell PC what to change on the OpenClaw side (PC will not touch the gate) |
 
 Notes for the reply path (from imsg v0.15.4 source):
 - rpc `send` accepts: `to`, `text`, `file` (denied by the gate), `service`, `transport`,
