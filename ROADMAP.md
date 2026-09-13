@@ -343,7 +343,7 @@ Mac state (Mac Claude, verified 2026-09-13):
 | 4 | PC | Set `channels.imessage.cliPath=/usr/local/bin/imsg-over-ssh`, enable the channel, restart the container | TODO |
 | 5 | PC + Mark | Test 1: Mark texts the assistant NUMBER from his iPhone. This is a real test now, because Mark's phone is a different Apple ID. Expect a reply from the assistant | TODO |
 | 6 | Mac | During test 1, watch `~/.imsg-bridge/gate.log`. If OpenClaw's send is denied, add the needed method to the gate allowlist after review | TODO |
-| 7 | PC + wife | Test 2: Mark's wife texts the assistant number | TODO |
+| 7 | PC + wife | Test 2: Mark's wife texts the assistant number. OPTIONAL for now: Mark's own iPhone is a valid tester after the switch | TODO (optional) |
 | 8 | PC | Send `pc-optionb-status.txt` to macbook-air: allowFrom count (not values), channel enabled yes/no, test 1 and 2 results, errors. No handles, no message text | TODO |
 
 Open issues for Option B (need Mark's decision or action):
@@ -365,6 +365,15 @@ Open issues for Option B (need Mark's decision or action):
     filtered). The PC check `imsg-over-ssh chats --limit 1` is now DENIED on purpose.
     To test reads from the PC, use rpc, e.g.
     `echo '{"jsonrpc":"2.0","id":1,"method":"chats.list","params":{"limit":5}}' | docker exec -i openclaw /usr/local/bin/imsg-over-ssh rpc`.
+  - Review round (2026-09-13) found two leak paths in reply matching (an id-less
+    request, and two requests with the same id). Fixed: the gate now filters every
+    reply by its shape (any `chats` or `messages` it contains), not by the request it
+    claims to answer. Requests must have an integer or string id. `handles.check` was
+    removed. A cutoff earlier than 2026-09-13 or in the future hides everything. Both
+    attacks were re-tested and return no old messages.
+  - Known limits: sender and participant names can come from the Mac's Contacts (Mark's
+    address book). A tapback on an old message could quote a short snippet. Both are
+    accepted for now.
 - SMS FORWARDING: the Mac's SMS account is still connected (Text Message Forwarding
   from Mark's iPhone). Turn it off on Mark's iPhone: Settings > Apps > Messages > Text
   Message Forwarding > MacBook Air = off. Otherwise the brain could read and send SMS as

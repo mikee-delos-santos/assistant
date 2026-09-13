@@ -42,6 +42,9 @@ APPLE_EPOCH = 978307200
 # Keys that carry message content. Unknown output holding any of them is hidden.
 CONTENT_KEYS = {"text", "message", "messages", "chats", "reply_to_text", "attachments"}
 SQL_CHUNK = 500
+# visible_since_utc must fall in this window. A typo that moves it earlier would expose
+# old rows whose destination happens to be an assistant handle.
+CUTOFF_FLOOR_UTC = "2026-09-13T00:00:00Z"
 
 # chats/history/watch print plain text the visibility filter cannot check.
 ARGV_SUBCOMMANDS = {"send", "status"}
@@ -54,7 +57,6 @@ RPC_METHODS = {
     "watch.subscribe",
     "watch.unsubscribe",
     "send",
-    "handles.check",
 }
 RPC_FLAGS = {"-v", "--verbose", "-j", "--json", "--json-output", "--jsonOutput"}
 LOG_LEVEL_FLAGS = {"--log-level", "--logLevel"}
@@ -120,19 +122,27 @@ class Visibility:
             with open(CONFIG) as fh:
                 cfg = json.load(fh)
             handles = sorted({str(h).strip().lower() for h in cfg["assistant_handles"]} - {""})
-            since = time.strptime(cfg["visible_since_utc"], "%Y-%m-%dT%H:%M:%SZ")
-            self.cutoff_ns = (calendar.timegm(since) - APPLE_EPOCH) * 1000000000
+            since = calendar.timegm(time.strptime(cfg["visible_since_utc"], "%Y-%m-%dT%H:%M:%SZ"))
+            floor = calendar.timegm(time.strptime(CUTOFF_FLOOR_UTC, "%Y-%m-%dT%H:%M:%SZ"))
+            if since < floor or since > time.time() + 86400:
+                raise ValueError("visible_since_utc outside the allowed window")
+            self.cutoff_ns = (since - APPLE_EPOCH) * 1000000000
             self.handles = handles
             # chat.db stores the account as "E:<email>" or "P:<phone>".
             self.accounts = [("e:" if "@" in h else "p:") + h for h in handles]
         except (OSError, ValueError, KeyError, TypeError) as err:
+            self.handles, self.accounts, self.cutoff_ns = [], [], None
             log("config", "visibility config unusable, all reads hidden: %s" % short(str(err)))
+        self._conn = None
 
     def _select(self, sql, keys):
         if not keys or not self.handles or self.cutoff_ns is None:
             return set()
         found = set()
-        conn = sqlite3.connect("file:%s?mode=ro" % CHAT_DB, uri=True, timeout=5)
+        if self._conn is None:
+            self._conn = sqlite3.connect("file:%s?mode=ro" % CHAT_DB, uri=True, timeout=5,
+                                         check_same_thread=False)
+        conn = self._conn
         try:
             for i in range(0, len(keys), SQL_CHUNK):
                 chunk = keys[i:i + SQL_CHUNK]
@@ -141,8 +151,11 @@ class Visibility:
                     handles=",".join("?" * len(self.handles)))
                 args = chunk + [self.cutoff_ns] + self.accounts + self.handles
                 found.update(row[0] for row in conn.execute(query, args))
-        finally:
+        except sqlite3.Error:
+            # Reopen next time. The caller hides the data for this reply.
+            self._conn = None
             conn.close()
+            raise
         return found
 
     @staticmethod
@@ -175,19 +188,32 @@ class Visibility:
                 m["reply_to_sender"] = None
         return kept
 
-    def filter_response(self, method, response):
-        result = response.get("result")
+    def filter_result(self, result):
+        """Filter by shape, never by which method the reply claims to answer."""
         if not isinstance(result, dict):
-            return response
-        if method == "chats.list":
+            return None if contains_content(result) else result
+        if "chats" in result:
             chats = [c for c in result.get("chats") or [] if isinstance(c, dict)]
             allowed = self.visible_chat_ids([c.get("id") for c in chats])
             result["chats"] = [c for c in chats if c.get("id") in allowed]
-        elif method in ("messages.history", "messages.after"):
+        if "messages" in result:
             result["messages"] = self.filter_messages(result.get("messages") or [])
-        elif contains_content(result):
-            log("hide", "content in %s result" % short(method))
-            response["result"] = {}
+        rest = {k: v for k, v in result.items() if k not in ("chats", "messages")}
+        if contains_content(rest):
+            log("hide", "unexpected content keys in a result")
+            return {k: result[k] for k in ("chats", "messages") if k in result}
+        return result
+
+    def filter_response(self, response):
+        if "result" in response:
+            response["result"] = self.filter_result(response["result"])
+        if contains_content(response.get("error")):
+            log("hide", "content in an error")
+            response["error"] = {"code": -32000, "message": "imsg-ssh-gate: error hidden"}
+        rest = {k: v for k, v in response.items() if k not in ("result", "error")}
+        if contains_content(rest):
+            log("hide", "content outside result")
+            return {k: response[k] for k in ("jsonrpc", "id", "result", "error") if k in response}
         return response
 
     def filter_notification(self, note):
@@ -195,6 +221,11 @@ class Visibility:
         if note.get("method") == "message" and isinstance(params, dict):
             kept = self.filter_messages([params.get("message")])
             if not kept:
+                return None
+            others = {k: v for k, v in note.items() if k != "params"}
+            other_params = {k: v for k, v in params.items() if k != "message"}
+            if contains_content(others) or contains_content(other_params):
+                log("hide", "content outside params.message")
                 return None
             params["message"] = kept[0]
             return note
@@ -255,8 +286,6 @@ def parse_request(raw):
 def run_rpc(args):
     check_rpc_args(args)
     visibility = Visibility()
-    pending = {}
-    pending_lock = threading.Lock()
     child = subprocess.Popen([IMSG, "rpc"] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     out = sys.stdout.buffer
     out_lock = threading.Lock()
@@ -283,12 +312,10 @@ def run_rpc(args):
             log("hide", "non-object line from imsg")
             return None
         response_id = message.get("id")
-        is_response = "id" in message and "method" not in message
+        is_response = "method" not in message
         try:
             if is_response:
-                with pending_lock:
-                    method = pending.pop(json.dumps(response_id), None)
-                message = visibility.filter_response(method, message)
+                message = visibility.filter_response(message)
             else:
                 message = visibility.filter_notification(message)
                 if message is None:
@@ -345,7 +372,8 @@ def run_rpc(args):
                 continue
             request_id = request.get("id")
             if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
-                request_id = None
+                reject(None, "request id must be an integer or a string")
+                continue
             method = request.get("method")
             if not isinstance(method, str) or method not in RPC_METHODS:
                 reject(request_id, "method %s is not allowed" % short(method))
@@ -354,9 +382,6 @@ def run_rpc(args):
                 reject(request_id, "file or path parameter in %s" % short(method))
                 continue
             line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
-            if request_id is not None:
-                with pending_lock:
-                    pending[json.dumps(request_id)] = method
         except Exception as err:
             # Any surprise (deep nesting, 1e400, odd types) is a denial, never a crash.
             reject(request_id, "bad request: %s" % short("%s: %s" % (type(err).__name__, err)))
