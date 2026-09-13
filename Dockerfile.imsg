@@ -10,7 +10,10 @@ RUN apt-get update \
 
 # The brain-side imsg-over-SSH wrapper (env-driven; non-secret)
 COPY scripts/imsg-over-ssh.sh /usr/local/bin/imsg-over-ssh
+# The single fixed launcher for remote Claude Code sessions (infopathy/mindr/work)
+COPY scripts/claude-launch.sh /usr/local/bin/claude-launch
 # Strip any CR (Windows checkouts can add CRLF, which breaks the shebang), then make executable
-RUN sed -i 's/\r$//' /usr/local/bin/imsg-over-ssh && chmod 0755 /usr/local/bin/imsg-over-ssh
+RUN sed -i 's/\r$//' /usr/local/bin/imsg-over-ssh /usr/local/bin/claude-launch \
+ && chmod 0755 /usr/local/bin/imsg-over-ssh /usr/local/bin/claude-launch
 
 USER node
