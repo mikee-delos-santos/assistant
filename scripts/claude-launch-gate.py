@@ -36,7 +36,7 @@ CONFIG_DIRS = {os.path.join(HOME, ".claude"), os.path.join(HOME, ".claude-corpor
 WARP_CONFIGS = os.path.join(HOME, ".warp", "launch_configurations")
 KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 MIN_SECONDS_BETWEEN_LAUNCHES = 60      # same project
-MIN_SECONDS_BETWEEN_ANY_LAUNCH = 300   # any project
+MIN_SECONDS_BETWEEN_ANY_LAUNCH = 5     # any project (Mark: sessions may be opened one after another)
 MAX_LAUNCHES_PER_DAY = 10
 MAX_LOG_BYTES = 1024 * 1024
 

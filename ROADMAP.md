@@ -118,7 +118,7 @@ Mac Claude status (2026-09-13):
    - `mindr` runs `env -u CLAUDE_CONFIG_DIR command claude` (setting CLAUDE_CONFIG_DIR to
      ~/.claude would move the state file and show login prompts). `work` runs
      `CLAUDE_CONFIG_DIR=~/.claude-corporate command claude`.
-   - Limits (file lock): 1 per project per 60s, 1 of any project per 5 min, 10 per day.
+   - Limits (file lock): 1 per project per 60s, 1 of any project per 5s, 10 per day.
    - A success means "launch requested", not "session ready".
    - Known and accepted: starting `claude` runs shell init and plugin SessionStart hooks
      in that folder, at a time the brain picks; the window is visible on the Mac screen.
