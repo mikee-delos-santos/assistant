@@ -1,12 +1,16 @@
 {
-  "//": "Template: merge this mcpServers entry into ~/.openclaw/openclaw.json on the brain host (AS-27).",
+  "//": "Reference only. This OpenClaw build stores MCP servers under mcp.servers (NOT mcpServers). Apply with: openclaw config set mcp.servers.chore-app '<the chore-app object>' --strict-json",
   "//secret": "The token is read from the CHORES_MCP_TOKEN env var - do NOT paste the JWT here.",
-  "mcpServers": {
-    "chore-app": {
-      "transport": "streamable-http",
-      "url": "https://chores.mikeedelossantos.dev/mcp",
-      "headers": {
-        "Authorization": "Bearer ${CHORES_MCP_TOKEN}"
+  "//endpoint": "This URL is the Rails backend on Railway. chores.mikeedelossantos.dev is the PWA frontend and serves HTML at /mcp, not the MCP server.",
+  "mcp": {
+    "servers": {
+      "chore-app": {
+        "enabled": true,
+        "transport": "streamable-http",
+        "url": "https://gamified-chores-production.up.railway.app/mcp",
+        "headers": {
+          "Authorization": "Bearer ${CHORES_MCP_TOKEN}"
+        }
       }
     }
   }
