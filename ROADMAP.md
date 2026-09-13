@@ -159,7 +159,7 @@ Trigger contract (PC project - Infopathy):
 | S5 | PC | Brice skill + routing: Mark-only trigger; map "mindr"/"work" to the Mac contract, "infopathy" to the PC helper; read `CLAUDE-SESSIONS.md`; never a raw shell | TODO |
 | S6 | Mark + PC | First real test: Mark texts Brice to launch `mindr`; confirm the Warp window opens on the Mac and the session shows in the Claude app | TODO |
 | P1 | PC | Infopathy host helper: watcher script + logon task installed and running; container has the trigger mount + launch key mount | DONE 2026-09-13 |
-| P2 | Mark + PC | Test Infopathy: Brice drops trigger `infopathy`; confirm a visible Warp window opens running `claude` in `infopathy-workspace` and the session shows in the Claude app | TODO |
+| P2 | Mark + PC | Test Infopathy: Brice drops trigger `infopathy`; confirm a visible Warp window opens running `claude` in `infopathy-workspace` and the session shows in the Claude app | DONE 2026-09-13 - end-to-end confirmed (Mark saw the window). Gotcha: Warp on Windows reads launch configs from Roaming (`%APPDATA%\warp\Warp\data\launch_configurations`), NOT Local |
 
 Mac check for step 5 (Mark, at the Mac; opens a real session window):
 `SSH_ORIGINAL_COMMAND="launch mindr" /usr/bin/python3 ~/.claude-launch/claude-launch-gate`

@@ -22,7 +22,8 @@ $Projects = @{
 $RepoData     = Join-Path (Split-Path $PSScriptRoot -Parent) 'data'
 $TriggerDir   = Join-Path $RepoData 'launch-triggers'
 $WarpExe      = Join-Path $env:LOCALAPPDATA 'Programs\Warp\warp.exe'
-$LaunchCfgDir = Join-Path $env:LOCALAPPDATA 'warp\Warp\data\launch_configurations'
+# Warp reads launch configs from Roaming AppData on Windows (NOT Local).
+$LaunchCfgDir = Join-Path $env:APPDATA 'warp\Warp\data\launch_configurations'
 $StateDir     = Join-Path $env:LOCALAPPDATA 'brice-launch'
 $LogFile      = Join-Path $StateDir 'watcher.log'
 $RateSeconds  = 60          # at most one launch per project per minute
