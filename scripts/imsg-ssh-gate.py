@@ -92,12 +92,31 @@ def risky_option(arg):
     return bool(RISKY_NAME.search(name))
 
 
-def has_risky_key(value):
+# Attachment switches set to false only turn a feature OFF, so they are safe.
+# Set to true they are still denied: attachments stay off until designed for.
+OFF_SWITCHES = {"attachments", "convert_attachments"}
+
+
+def risky_key(value):
+    """Return the first key name that points at files or attachments, or None."""
     if isinstance(value, dict):
-        return any(RISKY_NAME.search(str(k)) or has_risky_key(v) for k, v in value.items())
-    if isinstance(value, list):
-        return any(has_risky_key(v) for v in value)
-    return False
+        for k, v in value.items():
+            name = str(k)
+            if RISKY_NAME.search(name) and not (name in OFF_SWITCHES and v is False):
+                return name
+            found = risky_key(v)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for v in value:
+            found = risky_key(v)
+            if found:
+                return found
+    return None
+
+
+def has_risky_key(value):
+    return risky_key(value) is not None
 
 
 def contains_content(value):
@@ -381,8 +400,9 @@ def run_rpc(args):
             if not isinstance(method, str) or method not in RPC_METHODS:
                 reject(request_id, "method %s is not allowed" % short(method))
                 continue
-            if has_risky_key(request):
-                reject(request_id, "file or path parameter in %s" % short(method))
+            bad_key = risky_key(request)
+            if bad_key:
+                reject(request_id, "file or path parameter %s in %s" % (short(bad_key), short(method)))
                 continue
             line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
         except Exception as err:
