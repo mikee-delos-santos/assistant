@@ -18,7 +18,7 @@ messages on the assistant's own iMessage account (handles in
 ~/.imsg-bridge/assistant.json) sent or received after the switch. Every chat,
 message, and watch notification that imsg returns is checked against chat.db.
 If the config is missing or a check fails, the gate hides the data (fail closed).
-argv mode cannot be filtered, so it allows only `send` and `status`.
+argv mode cannot be filtered or guarded, so it allows only `status`.
 
 The gate never starts a shell. Denials are logged with the method or subcommand
 name only, never message text, so the allowlist can be tuned from the log.
@@ -47,7 +47,7 @@ SQL_CHUNK = 500
 CUTOFF_FLOOR_UTC = "2026-09-13T00:00:00Z"
 
 # chats/history/watch print plain text the visibility filter cannot check.
-ARGV_SUBCOMMANDS = {"send", "status"}
+ARGV_SUBCOMMANDS = {"status"}
 RPC_METHODS = {
     "initialize",
     "status",
@@ -103,7 +103,9 @@ CHAT_TARGET_KEYS = ("chat_id", "chat_identifier", "chat_guid")
 SMS_FALLBACK_KEYS = ("allow_sms_fallback", "allowSMSFallback")
 ONE_TO_ONE_STYLE = 45  # chat.style for a 1:1 chat; 43 is a group
 OSASCRIPT = "/usr/bin/osascript"
-SEND_TIMEOUT = 30
+SEND_TIMEOUT = 20
+DELIVERY_WAIT = 8  # seconds to find the sent row in chat.db
+ALLOWED_SERVICES = {"auto", "imessage"}
 # Same AppleScript path as `imsg send` when it has no existing chat: address the buddy on
 # the iMessage service. Recipient and text arrive as arguments, never inside the script.
 BUDDY_SEND_SCRIPT = """on run argv
@@ -152,9 +154,6 @@ def risky_key(value):
     return None
 
 
-def has_risky_key(value):
-    return risky_key(value) is not None
-
 
 def contains_content(value):
     if isinstance(value, dict):
@@ -190,8 +189,19 @@ class Visibility:
             self.handles, self.accounts, self.cutoff_ns = [], [], None
             log("config", "visibility config unusable, all reads hidden: %s" % short(str(err)))
         self._conn = None
+        self._lock = threading.Lock()
 
     def _select(self, sql, keys):
+        with self._lock:
+            return self._select_locked(sql, keys)
+
+    def _connection(self):
+        if self._conn is None:
+            self._conn = sqlite3.connect("file:%s?mode=ro" % CHAT_DB, uri=True, timeout=5,
+                                         check_same_thread=False)
+        return self._conn
+
+    def _select_locked(self, sql, keys):
         if not keys or not self.handles or self.cutoff_ns is None:
             return set()
         found = set()
@@ -233,7 +243,12 @@ class Visibility:
             self._ints(ids))
 
     def one_to_one_handle(self, params):
-        """Return the other person's handle for a visible 1:1 chat target, else None."""
+        """Handle of a 1:1 chat the brain may send to, else None.
+
+        Allowed only if that person has sent at least one message to the assistant account
+        after the switch (inbound, is_from_me = 0). The assistant's own outgoing messages
+        do not count, so the brain cannot unlock a chat by messaging it first.
+        """
         supplied = [k for k in CHAT_TARGET_KEYS if k in params]
         if len(supplied) != 1:
             return None
@@ -243,17 +258,50 @@ class Visibility:
             return None
         if key != "chat_id" and not isinstance(value, str):
             return None
-        if self._conn is None:
-            self._conn = sqlite3.connect("file:%s?mode=ro" % CHAT_DB, uri=True, timeout=5,
-                                         check_same_thread=False)
-        row = self._conn.execute(
-            "select ROWID, style, chat_identifier from chat where %s = ? limit 1" % column,
-            (value,)).fetchone()
-        if not row or row[1] != ONE_TO_ONE_STYLE or not row[2]:
+        if not self.handles or self.cutoff_ns is None:
             return None
-        if row[0] not in self.visible_chat_ids([row[0]]):
-            return None
-        return row[2]
+        with self._lock:
+            conn = self._connection()
+            try:
+                rows = conn.execute(
+                    "select ROWID, chat_identifier from chat where %s = ? and style = ?" % column,
+                    (value, ONE_TO_ONE_STYLE)).fetchall()
+                identifiers = {r[1] for r in rows if r[1]}
+                if len(identifiers) != 1:
+                    return None
+                handle = identifiers.pop()
+                # Any 1:1 chat row for this handle (iMessage and SMS rows can both exist).
+                all_rows = [r[0] for r in conn.execute(
+                    "select ROWID from chat where chat_identifier = ? and style = ?",
+                    (handle, ONE_TO_ONE_STYLE))]
+                query = ("select 1 from chat_message_join j join message m on m.ROWID = j.message_id"
+                         " where j.chat_id in (%s) and m.is_from_me = 0 and %s limit 1") % (
+                    ",".join("?" * len(all_rows)),
+                    self.MATCH.format(accounts=",".join("?" * len(self.accounts)),
+                                      handles=",".join("?" * len(self.handles))))
+                args = all_rows + [self.cutoff_ns] + self.accounts + self.handles
+                inbound = all_rows and conn.execute(query, args).fetchone()
+            except sqlite3.Error:
+                self._conn = None
+                conn.close()
+                raise
+        return handle if inbound else None
+
+    def sent_row(self, handle, since_ns):
+        """(id, guid) of an outgoing assistant message to handle newer than since_ns."""
+        with self._lock:
+            conn = self._connection()
+            query = ("select m.ROWID, m.guid from message m join chat_message_join j"
+                     " on j.message_id = m.ROWID join chat c on c.ROWID = j.chat_id"
+                     " where c.chat_identifier = ? and c.style = ? and m.is_from_me = 1"
+                     " and m.date >= ? and lower(coalesce(m.destination_caller_id, '')) in (%s)"
+                     " order by m.date desc limit 1") % ",".join("?" * len(self.handles))
+            try:
+                return conn.execute(query, [handle, ONE_TO_ONE_STYLE, since_ns] + self.handles).fetchone()
+            except sqlite3.Error:
+                self._conn = None
+                conn.close()
+                return None
 
     def filter_messages(self, items):
         items = [m for m in items if isinstance(m, dict)]
@@ -310,7 +358,9 @@ class Visibility:
                 reason = json.dumps(kept)[:300] if kept else "-"
             else:
                 reason = "-"
-            log("imsg-error", "code=%s %s | %s" % (short(code), text[:120], reason))
+            # Quoted strings in errors can hold handles or text; keep them out of the log.
+            log("imsg-error", "code=%s %s | %s" % (short(code), re.sub(r'"[^"]*"', '"..."', text[:120]),
+                                                   re.sub(r'"[^"]*"', '"..."', reason)))
             response["error"] = clean
         rest = {k: v for k, v in response.items() if k not in ("result", "error")}
         if contains_content(rest):
@@ -496,17 +546,15 @@ def run_rpc(args):
                     del params[k]
                 if stripped:
                     log("strip", "removed %s from send (no bridge on this Mac)" % ",".join(stripped))
-                # Never fall back to SMS: SMS on this Mac can go out through Mark's iPhone.
-                if str(params.get("service", "auto")).lower() == "sms":
-                    reject(request_id, "sms sends are not allowed")
+                # iMessage only: SMS on this Mac can go out through Mark's iPhone.
+                service = params.get("service", "auto")
+                if not isinstance(service, str) or service not in ALLOWED_SERVICES:
+                    reject(request_id, "only iMessage sends are allowed")
                     continue
-                for k in SMS_FALLBACK_KEYS:
-                    params.pop(k, None)
-                params["allow_sms_fallback"] = False
-                # After the Apple ID switch, imsg always resolves a 1:1 send to the old chat in
-                # chat.db, which Messages cannot find (AppleScript -1728). For a visible 1:1
-                # chat the gate sends by buddy handle itself. Visible means the person has
-                # messaged the assistant, so the brain cannot start chats with strangers.
+                # imsg resolves every 1:1 send to the old chat in chat.db, which Messages
+                # cannot find after the Apple ID switch (AppleScript -1728). The gate sends
+                # itself, and ONLY to a 1:1 chat whose person has messaged the assistant.
+                # Nothing is ever forwarded to imsg's send.
                 target = dict((k, params[k]) for k in CHAT_TARGET_KEYS if k in params)
                 if not target and isinstance(params.get("to"), str):
                     target = {"chat_identifier": params["to"].strip()}
@@ -515,25 +563,44 @@ def run_rpc(args):
                 except sqlite3.Error:
                     handle = None
                 text = params.get("text")
-                if handle and isinstance(text, str) and text.strip():
-                    ok, detail = buddy_send(handle, text)
-                    if ok:
-                        log("direct-send", "ok (1:1, %d chars)" % len(text))
-                        result = {"jsonrpc": "2.0", "id": request_id,
-                                  "result": {"ok": True, "transport": "applescript",
-                                             "service": "iMessage"}}
-                    else:
-                        log("direct-send", "failed: %s" % detail[:200])
-                        result = {"jsonrpc": "2.0", "id": request_id,
-                                  "error": {"code": -32603, "message": "Delivery failed",
-                                            "data": {"transport": "applescript",
-                                                     "operation": "send",
-                                                     "detail": detail}}}
-                    try:
-                        write_line((json.dumps(result) + "\n").encode())
-                    except OSError:
-                        finish(141)
+                if not handle:
+                    reject(request_id, "send allowed only to a 1:1 chat that messaged the assistant")
                     continue
+                if not isinstance(text, str) or not text.strip():
+                    reject(request_id, "send needs text")
+                    continue
+                started_ns = (int(time.time()) - APPLE_EPOCH - 2) * 1000000000
+                ok, detail = buddy_send(handle, text)
+                row = None
+                if ok:
+                    for _ in range(DELIVERY_WAIT * 2):
+                        row = visibility.sent_row(handle, started_ns)
+                        if row:
+                            break
+                        time.sleep(0.5)
+                if ok and row:
+                    log("direct-send", "ok (1:1, %d chars, row %d)" % (len(text), row[0]))
+                    result = {"jsonrpc": "2.0", "id": request_id,
+                              "result": {"ok": True, "transport": "applescript",
+                                         "service": "iMessage", "id": row[0],
+                                         "guid": row[1], "message_id": row[1]}}
+                else:
+                    number = re.search(r"\((-?\d+)\)", detail or "")
+                    reason = ("not found in chat.db after send" if ok else
+                              "AppleScript error %s" % (number.group(1) if number else "unknown"))
+                    log("direct-send", "failed: %s" % reason)
+                    # Messages may still deliver after a timeout or a late error, so a retry
+                    # could send twice.
+                    result = {"jsonrpc": "2.0", "id": request_id,
+                              "error": {"code": -32001, "message": "Delivery outcome unknown",
+                                        "data": {"transport": "applescript", "operation": "send",
+                                                 "retry_safe": False, "disposition": "unknown",
+                                                 "detail": reason}}}
+                try:
+                    write_line((json.dumps(result) + "\n").encode())
+                except OSError:
+                    finish(141)
+                continue
             line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
         except Exception as err:
             # Any surprise (deep nesting, 1e400, odd types) is a denial, never a crash.

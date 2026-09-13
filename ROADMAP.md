@@ -21,6 +21,8 @@ Status legend: DONE | WIP (in progress) | TODO | DEFERRED
   are on. The Mac .env has the same secrets as the PC (sent over Taildrop, never
   pasted in chat). Syncthing mirrors the memory folder PC <-> Mac over the tailnet.
   The Mac container stays STOPPED (PC is the active brain).
+- iMessage family channel is LIVE (2026-09-13 18:32): Mark texted the assistant number
+  from his iPhone and the PC brain replied through the Mac. See "Go-live result" below.
 - iMessage identity is now OPTION B (2026-09-13): Messages on the Mac is signed in to
   a dedicated Apple ID for the assistant, with its own phone number. The Mac's macOS
   Apple Account is still Mark's. A test from Mark's iPhone reached the assistant number.
@@ -341,7 +343,7 @@ Mac state (Mac Claude, verified 2026-09-13):
 | 2 | PC | `git pull`. Find `assistant-identity.env` (Downloads or `tailscale file get`). Append its three lines to the PC `.env`, then delete the received file. Do not print the values in chat or commit them | TODO |
 | 3 | PC | Set `channels.imessage.allowFrom` from `IMESSAGE_ALLOW_FROM` (dmPolicy=allowlist). Do NOT add the assistant's own email or number (reply-loop risk). Keep the values in openclaw.json only, never in git | TODO |
 | 4 | PC | Set `channels.imessage.cliPath=/usr/local/bin/imsg-over-ssh`, enable the channel, restart the container | TODO |
-| 5 | PC + Mark | Test 1: Mark texts the assistant NUMBER from his iPhone. This is a real test now, because Mark's phone is a different Apple ID. Expect a reply from the assistant | TODO |
+| 5 | PC + Mark | Test 1: Mark texts the assistant NUMBER from his iPhone. This is a real test now, because Mark's phone is a different Apple ID. Expect a reply from the assistant | DONE 2026-09-13 18:32 - reply received |
 | 6 | Mac | During test 1, watch `~/.imsg-bridge/gate.log`. If OpenClaw's send is denied, add the needed method to the gate allowlist after review | TODO |
 | 7 | PC + wife | Test 2: Mark's wife texts the assistant number. OPTIONAL for now: Mark's own iPhone is a valid tester after the switch | TODO (optional) |
 | 8 | PC | Send `pc-optionb-status.txt` to macbook-air: allowFrom count (not values), channel enabled yes/no, test 1 and 2 results, errors. No handles, no message text | TODO |
@@ -438,6 +440,59 @@ Notes for the reply path (from imsg v0.15.4 source):
 - `region` defaults to `US`. Philippine numbers may need `region: "PH"` or `+63` format.
 - `reply_to` (a threaded reply) may need the bridge. If the error mentions bridge or
   reply, turn threaded replies off in OpenClaw's iMessage config.
+
+Go-live result 2026-09-13 18:32 (Mac Claude): END-TO-END REPLY WORKS.
+Chain: Mark's iPhone -> assistant number -> Messages on the Mac -> gate -> PC brain ->
+gate -> Messages (from the assistant number) -> Mark's iPhone. Nothing was changed on
+the PC after its restart; every fix was in the Mac gate (PRs #24, #25, #27, #29, #31,
+#32, #33), and OpenClaw reconnected by itself after each gate install.
+
+What had to be fixed, in order:
+1. `imsg rpc --help` probe was denied -> allowed (usage text only).
+2. `watch.subscribe` with `attachments:false` was denied -> false switches allowed.
+3. imsg errors were hidden (the JSON-RPC `message` key looked like content) -> error
+   code, message, and reason fields now pass and are logged.
+4. OpenClaw sends replies as threaded replies (`reply_to`), which need imsg's bridge
+   (SIP off + dylib) -> the gate strips `reply_to`; replies arrive as plain messages.
+5. imsg always resolves a 1:1 send to the existing chat in chat.db. For Mark that chat
+   belongs to his OLD Apple ID, and Messages cannot find it (AppleScript -1728); Messages
+   only exposes the merged SMS chat. -> For a 1:1 chat whose person has already messaged
+   the assistant, the gate sends itself (AppleScript: send to buddy on the iMessage
+   service). Other sends still go to imsg.
+6. All sends are iMessage only (`allow_sms_fallback=false`, `service: sms` denied),
+   because SMS on this Mac can go out through Mark's iPhone.
+
+Known limits and follow-ups:
+- In chat.db the reply row shows Mark's OLD account in `account`, but
+  `destination_caller_id` (the sending address) is the assistant number. Mark CONFIRMED
+  on his iPhone that the reply came from the assistant number.
+- Group chats: sends denied by the gate for now.
+- Attachments and threaded replies are off.
+- `send-rich` stays denied (no bridge on this Mac).
+- The gate fixes #24-#33 were merged with local tests but WITHOUT the adversarial review
+  from CLAUDE.md. The post-hoc review found real holes, now fixed in the same PR as this
+  note:
+  - argv `imsg send` skipped every guard (SMS to anyone was possible). argv mode now
+    allows only `status`.
+  - rpc `send` with no eligible target was forwarded to imsg unchanged (strangers, old
+    chats, possible SMS). Now the gate never forwards `send` to imsg. It sends itself,
+    only to a 1:1 chat whose person has sent an inbound message to the assistant account
+    after the switch. The assistant's own outgoing messages do not count.
+  - `service` must be missing, `auto`, or `imessage`.
+  - After a send the gate looks for the sent row in chat.db (up to 8s) and returns its
+    id and guid. Otherwise it returns "Delivery outcome unknown" with `retry_safe: false`
+    so the brain does not send twice.
+  - The log keeps only AppleScript error numbers; quoted strings in errors are blanked.
+  - One lock around the chat.db connection; the chat lookup filters 1:1 rows.
+  - Group chats: sends are now denied (not supported).
+  - Tested without sending: strangers, old chats (by id and by handle), groups, and
+    ` sms`/`SMS` denied; the eligible chat passes; reads and strict parsing unchanged.
+- PC cleanup (optional): turn off threaded replies in OpenClaw's iMessage config, so the
+  gate does not need to strip `reply_to`; `git pull`.
+- Mark's wife test (step 7): optional, not done yet.
+- SMS forwarding from Mark's iPhone to this Mac is still on (turn off).
+- Do not install the pending macOS update until the bridge is stable; updates can reset
+  Full Disk Access and Automation permissions.
 
 ## Runbooks
 - docs/runbooks/openclaw-on-windows.md - PC brain (Docker, harden, Tailscale serve)
