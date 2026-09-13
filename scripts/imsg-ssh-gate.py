@@ -95,6 +95,8 @@ def risky_option(arg):
 # Attachment switches set to false only turn a feature OFF, so they are safe.
 # Set to true they are still denied: attachments stay off until designed for.
 OFF_SWITCHES = {"attachments", "convert_attachments"}
+# imsg send aliases for a threaded-reply target.
+REPLY_KEYS = ("reply_to", "replyTo", "reply_to_guid", "message_guid")
 
 
 def risky_key(value):
@@ -418,6 +420,15 @@ def run_rpc(args):
             if bad_key:
                 reject(request_id, "file or path parameter %s in %s" % (short(bad_key), short(method)))
                 continue
+            params = request.get("params")
+            if method == "send" and isinstance(params, dict):
+                # Threaded replies need imsg's bridge (SIP off + dylib), which this Mac does
+                # not have, and imsg then refuses the whole send. Send a plain message.
+                stripped = [k for k in REPLY_KEYS if k in params]
+                for k in stripped:
+                    del params[k]
+                if stripped:
+                    log("strip", "removed %s from send (no bridge on this Mac)" % ",".join(stripped))
             line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
         except Exception as err:
             # Any surprise (deep nesting, 1e400, odd types) is a denial, never a crash.
