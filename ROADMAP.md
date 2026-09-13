@@ -69,6 +69,47 @@ through the Mac gate; Option B identity live; gate hides Mark's old history; SMS
 forwarding to the Mac is effectively off (the iPhone no longer lists the Mac, and no
 SMS rows arrived since the switch); end-to-end reply confirmed from the assistant number.
 
+## Handoff: Brice-launched remote Claude Code sessions (2026-09-13)
+
+Goal: when Mark texts Brice "launch a <project> Claude Code session with remote", Brice
+opens a VISIBLE Warp window running a Claude Code session in that project's directory on the
+correct machine, with remote control on, so Mark drives it from the Claude app on his phone
+while AFK.
+
+Decisions (from Mark):
+- Trigger: Mark only, over iMessage. Remote-control sessions are tied to Mark's claude.ai
+  account, so only he can attach even if the action is mis-triggered by another handle.
+- Scope: one allowlisted "start session" action per project. NOT a general shell.
+- Terminal: a VISIBLE Warp window on both machines (not a headless server).
+- Workspace root is `~/workspace` on both machines; each repo lives under it.
+- Projects: three. Two on the Mac (one is corporate), one on the PC. Keep the corporate
+  project name and path out of this public repo - put the real map in the synced workspace
+  (TOOLS.md / openclaw config), which both brains read.
+
+Enablement: set `remoteControlAtStartup: true` so any `claude` session auto-enables remote
+control at launch (no `/rc`, nothing to forget).
+
+PC status / TODOs:
+- DONE: `remoteControlAtStartup: true` set in PC `~/.claude/settings.json` (2026-09-13).
+- DONE: PC project is Infopathy at `C:\Users\markr\workspace\infopathy-workspace`.
+- TODO (PC Claude): a Windows host helper so Brice (in its Linux container) can open a
+  visible Warp window running `claude` on the Windows desktop - Brice cannot reach the
+  Windows GUI from the container. Then a Brice skill + synced routing note (Mark-only).
+
+Mac Claude TODOs (pull this, then do):
+1. Set `remoteControlAtStartup: true` in BOTH `~/.claude/settings.json` AND
+   `~/.claude-corporate/settings.json`.
+2. Resolve the two Mac project directories under `~/workspace` (Mark will confirm which is
+   which). Record the real names/paths ONLY in the synced workspace map, not in this repo.
+3. Add a narrow forced-command (same pattern as the imsg gate, with a SEPARATE SSH key - do
+   not reuse the imsg key or loosen the imsg gate) that does exactly one thing per project:
+   open a visible Warp window (Warp launch config or `open -a Warp`) running `claude` in that
+   project's dir, with the correct `CLAUDE_CONFIG_DIR` (corporate project ->
+   `~/.claude-corporate`; personal -> `~/.claude`). The project name must be an allowlisted
+   enum, not free text.
+4. Publish the invocation contract here (how the PC signals which project) so Brice can call
+   it without touching a raw shell.
+
 ## Architecture (see docs/decisions/0001-architecture.md)
 PC = always-on primary brain. Mac = warm backup brain + the "Apple bridge" for
 iMessage and Apple Reminders. Tailscale connects PC/Mac/iPhone. Sync only the
