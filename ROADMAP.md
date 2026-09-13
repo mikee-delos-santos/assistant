@@ -154,7 +154,7 @@ Trigger contract (PC project - Infopathy):
 |---|---|---|---|
 | S1 | PC | Make a SEPARATE key for launches, stored like the imsg key (Linux named volume, chmod 600, owned by uid 1000), comment exactly `brice-launch`. Never reuse the imsg key | DONE 2026-09-13 - key in `openclaw_launch_ssh` volume (600, uid 1000), comment `brice-launch`; mounted RO at `/home/node/.ssh-launch` |
 | S2 | PC | Send ONLY the public key to the Mac: copy it to `pc-brice-launch.pub`, `tailscale file cp pc-brice-launch.pub macbook-air:`, delete the copy | DONE 2026-09-13 - public key Taildropped to macbook-air; local copy deleted |
-| S3 | Mark (Mac) | Install it: `bash scripts/install-launch-key.sh <path to pc-brice-launch.pub>`. It adds `from="100.123.4.5",restrict,command=<launch gate>` and refuses a key already used for imsg | TODO |
+| S3 | Mark (Mac) | Install it: `bash scripts/install-launch-key.sh <path to pc-brice-launch.pub>`. It adds `from="100.123.4.5",restrict,command=<launch gate>` and refuses a key already used for imsg | DONE 2026-09-13 - fingerprint SHA256:qYkp...n8lo installed with from/restrict/gate |
 | S4 | PC | From the container, run the contract with `list`. Expect `["mindr","work"]`. Do NOT run `launch` yet | TODO |
 | S5 | PC | Brice skill + routing: Mark-only trigger; map "mindr"/"work" to the Mac contract, "infopathy" to the PC helper; read `CLAUDE-SESSIONS.md`; never a raw shell | TODO |
 | S6 | Mark + PC | First real test: Mark texts Brice to launch `mindr`; confirm the Warp window opens on the Mac and the session shows in the Claude app | TODO |
