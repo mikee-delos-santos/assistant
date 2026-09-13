@@ -284,6 +284,9 @@ def parse_request(raw):
 
 
 def run_rpc(args):
+    if args in (["--help"], ["-h"]):
+        # OpenClaw may probe `imsg rpc --help`. It prints usage text only, no data.
+        os.execv(IMSG, [IMSG, "rpc", "--help"])
     check_rpc_args(args)
     visibility = Visibility()
     child = subprocess.Popen([IMSG, "rpc"] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
