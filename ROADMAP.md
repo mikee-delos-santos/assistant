@@ -382,6 +382,24 @@ Open issues for Option B (need Mark's decision or action):
   replaced by this section. allowFrom now protects the assistant account, and Mark is a
   valid tester.
 
+PC go-live attempt 2026-09-13 (PC Claude):
+- Steps 2-3 DONE: identity in PC .env (values not printed/committed), dmPolicy=allowlist,
+  allowFrom=3 handles, cliPath=/usr/local/bin/imsg-over-ssh set. rpc read pre-check
+  returned exactly 1 chat (assistant account; gate hides old history - confirmed).
+- Step 4 attempted: restarted the container; the imessage plugin loaded and started the
+  provider, but it FAILED to connect and auto-restart-looped. Channel is enabled in
+  config but not running. Mark did NOT text (step 5 held).
+- Two gate denials block startup (need Mac gate changes; details sent to macbook-air in
+  pc-optionb-status.txt over Taildrop):
+  1) `imsg rpc --help` (OpenClaw readiness probe) -> "rpc option '--help' is not allowed".
+  2) `watch.subscribe` -> "file or path parameter in 'watch.subscribe' code=-32601": the
+     file/path/db/attach key filter blocks a benign watch.subscribe param (likely
+     attachments / dbPath / since_rowid / include_reactions). See ~/.imsg-bridge/gate.log.
+- HANDOFF to Mac: update the gate to allow `rpc --help` and OpenClaw's watch.subscribe
+  params, reinstall on the Mac, then tell PC to `docker compose restart openclaw` and
+  retry test 1. (Mac already pushed a small gate change; awaiting confirmation it is
+  installed and covers both.)
+
 ## Runbooks
 - docs/runbooks/openclaw-on-windows.md - PC brain (Docker, harden, Tailscale serve)
 - docs/runbooks/mac-backup-brain.md - Mac from-scratch: backup brain + iMessage bridge
