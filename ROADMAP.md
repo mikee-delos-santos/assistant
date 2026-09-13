@@ -166,6 +166,29 @@ Trigger contract (PC project - Infopathy):
 Mac check for step 5 (Mark, at the Mac; opens a real session window):
 `SSH_ORIGINAL_COMMAND="launch mindr" /usr/bin/python3 ~/.claude-launch/claude-launch-gate`
 
+## Handoff: SMS failsafe for the family channel (2026-09-13)
+
+Goal: when iMessage is unavailable (Mark or Kath on poor mobile data, so their text falls
+back to green SMS), Brice should still receive and reply. The assistant's SIM iPhone (the
+spare phone on the assistant Apple ID) is almost always next to the Mac, so its SMS can be
+forwarded into the Mac's Messages and read by imsg.
+
+Mark (iPhone, one time): on the spare assistant iPhone (AI SIM + assistant Apple ID),
+Settings > Messages > Text Message Forwarding > enable the Mac. This routes SMS for the AI
+number into the Mac's Messages.app. It was turned off during the Option B switch.
+
+Mac Claude (gate change):
+- Accept INBOUND SMS rows from the allowlisted family numbers (reuse the iMessage allowlist),
+  not only iMessage-service rows.
+- On OUTBOUND, reply over the SAME service the incoming used: if the incoming was SMS, reply
+  by SMS; otherwise iMessage. Today the gate is iMessage-only outbound (no SMS fallback, PR
+  #32) - relax that only for replying to an SMS conversation from an allowlisted number.
+  Keep the allowlist; never open SMS to unknown numbers.
+
+PC / OpenClaw: expected to need no change - the channel reads whatever imsg surfaces and the
+family numbers are already allowlisted. Verify with one SMS test after the gate change (turn
+Mark's iMessage off briefly, or text from a non-iMessage path).
+
 ## Architecture (see docs/decisions/0001-architecture.md)
 PC = always-on primary brain. Mac = warm backup brain + the "Apple bridge" for
 iMessage and Apple Reminders. Tailscale connects PC/Mac/iPhone. Sync only the
