@@ -92,9 +92,13 @@ control at launch (no `/rc`, nothing to forget).
 PC status / TODOs:
 - DONE: `remoteControlAtStartup: true` set in PC `~/.claude/settings.json` (2026-09-13).
 - DONE: PC project is Infopathy at `C:\Users\markr\workspace\infopathy-workspace`.
-- TODO (PC Claude): a Windows host helper so Brice (in its Linux container) can open a
-  visible Warp window running `claude` on the Windows desktop - Brice cannot reach the
-  Windows GUI from the container. Then a Brice skill + synced routing note (Mark-only).
+- DONE (2026-09-13): Windows host helper for Infopathy. Brice cannot reach the Windows GUI
+  from its container, so `scripts/warp-launch-watcher.ps1` runs in Mark's user session (logon
+  scheduled task `BriceWarpLaunchWatcher`, installed via `scripts/install-warp-watcher.ps1`).
+  It watches `data/launch-triggers` (bind-mounted into the container) and, for an allowlisted
+  project only, opens a visible Warp window running `claude` in that project's dir. Rate-limited
+  1/project/60s; trigger CONTENT is ignored; only `claude` is ever launched (not a shell).
+- TODO (PC Claude, part of S5): the Brice skill that drops the trigger / calls the Mac contract.
 
 Mac Claude status (2026-09-13):
 1. DONE: `remoteControlAtStartup: true` in `~/.claude/settings.json` and
@@ -132,17 +136,30 @@ ssh -T -i <launch key> -o IdentitiesOnly=yes -o BatchMode=yes \
 <command> = launch <key>    -> {"ok": true, "project": "<key>", "note": "launch requested; ..."}
                                {"ok": false, "error": "<reason>"}   (unknown project, limits, Warp)
 ```
-- Windows OpenSSH needs `-o KexAlgorithms=curve25519-sha256` (same as the imsg key).
+- Windows OpenSSH needs `-o KexAlgorithms=curve25519-sha256` (same as the imsg key). Note:
+  the container runs OpenSSH on Linux and does NOT need this flag (like imsg-over-ssh).
 - The Mac host key and known_hosts are the same as for the imsg key.
+
+Trigger contract (PC project - Infopathy):
+```
+# Brice, from inside the container, drops an empty file named after the project:
+:> /home/node/.launch-triggers/infopathy
+# The Windows host watcher opens a visible Warp window running `claude` in
+# C:\Users\markr\workspace\infopathy-workspace, then deletes the trigger.
+```
+- Allowlist is in `scripts/warp-launch-watcher.ps1` ($Projects). Only `infopathy` today.
+- Unknown project names are logged and discarded; nothing else runs.
 
 | # | Who | Step | Status |
 |---|---|---|---|
-| S1 | PC | Make a SEPARATE key for launches, stored like the imsg key (Linux named volume, chmod 600, owned by uid 1000), comment exactly `brice-launch`. Never reuse the imsg key | TODO |
-| S2 | PC | Send ONLY the public key to the Mac: copy it to `pc-brice-launch.pub`, `tailscale file cp pc-brice-launch.pub macbook-air:`, delete the copy | TODO |
+| S1 | PC | Make a SEPARATE key for launches, stored like the imsg key (Linux named volume, chmod 600, owned by uid 1000), comment exactly `brice-launch`. Never reuse the imsg key | DONE 2026-09-13 - key in `openclaw_launch_ssh` volume (600, uid 1000), comment `brice-launch`; mounted RO at `/home/node/.ssh-launch` |
+| S2 | PC | Send ONLY the public key to the Mac: copy it to `pc-brice-launch.pub`, `tailscale file cp pc-brice-launch.pub macbook-air:`, delete the copy | DONE 2026-09-13 - public key Taildropped to macbook-air; local copy deleted |
 | S3 | Mark (Mac) | Install it: `bash scripts/install-launch-key.sh <path to pc-brice-launch.pub>`. It adds `from="100.123.4.5",restrict,command=<launch gate>` and refuses a key already used for imsg | TODO |
 | S4 | PC | From the container, run the contract with `list`. Expect `["mindr","work"]`. Do NOT run `launch` yet | TODO |
 | S5 | PC | Brice skill + routing: Mark-only trigger; map "mindr"/"work" to the Mac contract, "infopathy" to the PC helper; read `CLAUDE-SESSIONS.md`; never a raw shell | TODO |
 | S6 | Mark + PC | First real test: Mark texts Brice to launch `mindr`; confirm the Warp window opens on the Mac and the session shows in the Claude app | TODO |
+| P1 | PC | Infopathy host helper: watcher script + logon task installed and running; container has the trigger mount + launch key mount | DONE 2026-09-13 |
+| P2 | Mark + PC | Test Infopathy: Brice drops trigger `infopathy`; confirm a visible Warp window opens running `claude` in `infopathy-workspace` and the session shows in the Claude app | TODO |
 
 Mac check for step 5 (Mark, at the Mac; opens a real session window):
 `SSH_ORIGINAL_COMMAND="launch mindr" /usr/bin/python3 ~/.claude-launch/claude-launch-gate`

@@ -32,6 +32,12 @@ services:
       # imsg-over-SSH key + known_hosts. Linux-native named volume so the key stays
       # 600 (ssh refuses the 0777 that a Windows bind mount would show). Read-only.
       - openclaw_imsg_ssh:/home/node/.ssh-imsg:ro
+      # Separate launch key for the Mac "start Claude Code session" gate (never the
+      # imsg key). Same named-volume trick to keep the private key at 600. Read-only.
+      - openclaw_launch_ssh:/home/node/.ssh-launch:ro
+      # Launch triggers: Brice drops an allowlisted project name file here; the Windows
+      # host watcher (scripts/warp-launch-watcher.ps1) opens a visible Warp + claude.
+      - ./data/launch-triggers:/home/node/.launch-triggers
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -42,6 +48,10 @@ volumes:
   # Create + populate once (per host): docker volume create openclaw_imsg_ssh, then
   # copy id_ed25519 (chmod 600) and known_hosts in, owned by uid 1000.
   openclaw_imsg_ssh:
+    external: true
+  # Create + populate once: docker volume create openclaw_launch_ssh, then add the
+  # brice-launch key (chmod 600) and known_hosts, owned by uid 1000.
+  openclaw_launch_ssh:
     external: true
 
 # First run (after adding keys to .env):
