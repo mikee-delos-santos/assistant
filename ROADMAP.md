@@ -347,13 +347,24 @@ Mac state (Mac Claude, verified 2026-09-13):
 | 8 | PC | Send `pc-optionb-status.txt` to macbook-air: allowFrom count (not values), channel enabled yes/no, test 1 and 2 results, errors. No handles, no message text | TODO |
 
 Open issues for Option B (need Mark's decision or action):
-- OLD PERSONAL HISTORY: chat.db on the Mac still holds Mark's old iMessage history (529
-  chats, about 11,000 messages). Switching accounts does not delete it. The brain can
-  still list those chats through `chats.list` and read them with `messages.history`.
-  `allowFrom` limits whom the brain answers, not what it can read. Choose one:
-  (a) delete the Mac copy of the old history (Mark's iPhone keeps its copy), or
-  (b) add a gate filter that hides chats not on the assistant account. Until then,
-  treat Mark's old history as visible to the brain.
+- OLD PERSONAL HISTORY: DONE with a gate filter, nothing deleted (Mark chose (b) on
+  2026-09-13, so no risk of a delete syncing to his iPhone). chat.db still holds Mark's
+  old history (529 chats, about 11,000 messages), but the gate hides it:
+  - Private config on the Mac: `~/.imsg-bridge/assistant.json` (assistant handles +
+    `visible_since_utc`, the switch time). Not in git.
+  - A message is visible only if its chat.db `account` or `destination_caller_id` is an
+    assistant handle AND it is newer than the switch. The gate checks every
+    `chats.list` chat, every `messages.history` / `messages.after` message, and every
+    watch `message` notification against chat.db. A quoted old message
+    (`reply_to_text`) is blanked. Unknown output with message content is hidden.
+  - Fail closed: no config or a failed check hides the data.
+  - Tested on the Mac: raw imsg showed 50 chats; through the gate only the assistant
+    chat. Chat 1 raw [new + 2 old] -> gated [new]. The wife's old chat -> empty.
+    `messages.after` 47 raw -> 1 gated (cursor kept). Watch replay hid 12 old messages.
+  - argv mode now allows only `send` and `status` (plain-text output cannot be
+    filtered). The PC check `imsg-over-ssh chats --limit 1` is now DENIED on purpose.
+    To test reads from the PC, use rpc, e.g.
+    `echo '{"jsonrpc":"2.0","id":1,"method":"chats.list","params":{"limit":5}}' | docker exec -i openclaw /usr/local/bin/imsg-over-ssh rpc`.
 - SMS FORWARDING: the Mac's SMS account is still connected (Text Message Forwarding
   from Mark's iPhone). Turn it off on Mark's iPhone: Settings > Apps > Messages > Text
   Message Forwarding > MacBook Air = off. Otherwise the brain could read and send SMS as
