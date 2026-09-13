@@ -97,6 +97,8 @@ def risky_option(arg):
 OFF_SWITCHES = {"attachments", "convert_attachments"}
 # imsg send aliases for a threaded-reply target.
 REPLY_KEYS = ("reply_to", "replyTo", "reply_to_guid", "message_guid")
+# Fields of an imsg delivery-failure error that carry the reason, not message data.
+DELIVERY_KEYS = ("retry_safe", "disposition", "transport", "operation", "detail")
 
 
 def risky_key(value):
@@ -242,8 +244,17 @@ class Visibility:
             # Keep only a short string; drop objects that could hold message rows.
             if isinstance(data, str):
                 clean["data"] = data[:300]
-            log("imsg-error", "code=%s %s | %s" % (short(code), text[:120],
-                                                   data[:200] if isinstance(data, str) else "-"))
+                reason = data[:200]
+            elif isinstance(data, dict):
+                # imsg delivery failures: retry_safe, disposition, transport, operation, detail.
+                kept = {k: (v[:300] if isinstance(v, str) else v) for k, v in data.items()
+                        if k in DELIVERY_KEYS and isinstance(v, (str, bool, int))}
+                if kept:
+                    clean["data"] = kept
+                reason = json.dumps(kept)[:300] if kept else "-"
+            else:
+                reason = "-"
+            log("imsg-error", "code=%s %s | %s" % (short(code), text[:120], reason))
             response["error"] = clean
         rest = {k: v for k, v in response.items() if k not in ("result", "error")}
         if contains_content(rest):
