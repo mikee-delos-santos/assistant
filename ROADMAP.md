@@ -292,6 +292,23 @@ Phase B (later, not in this handoff):
   wife's phone.
 - Attachments: the gate blocks scp, so attachments stay off until we design for them.
 
+PC Phase B progress 2026-09-13 (PC Claude), identity choice = Option A guarded test:
+- Custom image `assistant/openclaw:with-ssh` built (Dockerfile.imsg): pinned OpenClaw
+  base digest + openssh-client + the imsg-over-ssh wrapper (CR stripped; .gitattributes
+  keeps *.sh/*.py LF). `.dockerignore` keeps secrets out of the build.
+- SSH key in a Linux-native named volume `openclaw_imsg_ssh` (id_ed25519 chmod 600 +
+  known_hosts, owned uid 1000), mounted read-only at /home/node/.ssh-imsg. Avoids the
+  Windows-bind-mount 0777 problem.
+- docker-compose.yml switched to the custom image (build:) + the ssh volume; `.env` has
+  IMSG_SSH_TARGET=mikee@100.67.66.94, IMSG_SSH_KEY, IMSG_SSH_KNOWN_HOSTS (per-host,
+  gitignored). Container recreated, healthy.
+- VERIFIED: `docker exec openclaw /usr/local/bin/imsg-over-ssh chats --limit 1` returns
+  data (exit 0) - the container can drive imsg on the Mac through the gate. Read-only.
+- REMAINING to enable the channel: (1) Mark's wife's handle for
+  `channels.imessage.allowFrom` (dmPolicy=allowlist so only family is processed),
+  (2) set channels.imessage.cliPath=/usr/local/bin/imsg-over-ssh + enable, (3) test from
+  the wife's phone. Channel still OFF; no iMessage sent.
+
 ## Runbooks
 - docs/runbooks/openclaw-on-windows.md - PC brain (Docker, harden, Tailscale serve)
 - docs/runbooks/mac-backup-brain.md - Mac from-scratch: backup brain + iMessage bridge

@@ -1,0 +1,16 @@
+# OpenClaw brain image + an SSH client, so the container can run imsg on the Mac
+# over SSH (the base image has no ssh). Pinned to the digest we tested on.
+# Rebuild + re-pin when upgrading OpenClaw.
+FROM ghcr.io/openclaw/openclaw@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+
+# The brain-side imsg-over-SSH wrapper (env-driven; non-secret)
+COPY scripts/imsg-over-ssh.sh /usr/local/bin/imsg-over-ssh
+# Strip any CR (Windows checkouts can add CRLF, which breaks the shebang), then make executable
+RUN sed -i 's/\r$//' /usr/local/bin/imsg-over-ssh && chmod 0755 /usr/local/bin/imsg-over-ssh
+
+USER node
