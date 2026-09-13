@@ -21,10 +21,11 @@ Status legend: DONE | WIP (in progress) | TODO | DEFERRED
   are on. The Mac .env has the same secrets as the PC (sent over Taildrop, never
   pasted in chat). Syncthing mirrors the memory folder PC <-> Mac over the tailnet.
   The Mac container stays STOPPED (PC is the active brain).
-- iMessage runs as a PROTOTYPE on Mark's personal Apple ID (Option A, see
-  "Decision: iMessage identity" below). Dedicated Apple ID (Option B) is planned.
-- Assistant name / persona: NOT chosen yet (it becomes the iMessage contact name
-  once we move to Option B).
+- iMessage identity is now OPTION B (2026-09-13): Messages on the Mac is signed in to
+  a dedicated Apple ID for the assistant, with its own phone number. The Mac's macOS
+  Apple Account is still Mark's. A test from Mark's iPhone reached the assistant number.
+  The handles are private: see "Option B: identity switch" below.
+- Assistant name / persona: NOT chosen yet (it becomes the iMessage contact name).
 
 ## Architecture (see docs/decisions/0001-architecture.md)
 PC = always-on primary brain. Mac = warm backup brain + the "Apple bridge" for
@@ -91,14 +92,15 @@ Runbook: docs/runbooks/chores-mcp-integration.md
 ## Channels & persona
 | Task | Status | Notes |
 |---|---|---|
-| iMessage family channel (free, imsg over Tailscale) | WIP | prototype on personal Apple ID (Option A); SSH round trip PASSED 2026-09-13 on the Mac itself; PC wiring in progress, see "Handoff: wire the PC brain" |
-| Assistant name / persona + dedicated Apple ID (Option B) | TODO | future; move off the personal Apple ID before real family use |
+| iMessage family channel (free, imsg over Tailscale) | WIP | Option B assistant Apple ID on the Mac; container runs imsg over SSH through the gate; channel still OFF - see "Option B: identity switch" |
+| Assistant name / persona + dedicated Apple ID (Option B) | WIP | dedicated Apple ID + number live in Messages on the Mac (2026-09-13); name not chosen |
 | iPhone device pairing to the PC brain | TODO | open tailnet URL, pair, approve on PC |
 
 ## Decision: iMessage identity (2026-09-13)
-Prototype with Option A now. Plan to move to Option B later.
+UPDATE 2026-09-13 (later the same day): Mark switched to Option B. Option A below is
+kept as history only. See "Option B: identity switch" for the current state.
 
-Option A - Mark's personal Apple ID (CHOSEN for the prototype)
+Option A - Mark's personal Apple ID (was the prototype, now REPLACED)
 - Works today. Messages on the Mac is already signed in.
 - Risk: the brain can read every message Mark receives, from anyone.
 - Risk: replies go out under Mark's name, so family cannot tell Mark from the bot.
@@ -108,11 +110,12 @@ Option A - Mark's personal Apple ID (CHOSEN for the prototype)
 - Test from a different Apple ID (e.g. Mark's wife's phone). A text from Mark's own
   iPhone is Mark to himself and will not test the bridge.
 
-Option B - dedicated free Apple ID for the assistant (FUTURE)
+Option B - dedicated free Apple ID for the assistant (CHOSEN 2026-09-13)
 - The assistant is its own contact. The brain only sees messages sent to it.
 - Needs the assistant name first, because the Apple ID is created with it.
 - Messages on one macOS user allows one iMessage account. Two ways to do it:
   - Switch this Mac's Messages to the new Apple ID (Mark's iMessages leave the Mac).
+    <- this is what Mark did.
   - Or create a second macOS user for the assistant, kept logged in with fast user
     switching, so Mark keeps his own Messages. Untested: sending from a background
     user session may also fail with -1743.
@@ -308,6 +311,56 @@ PC Phase B progress 2026-09-13 (PC Claude), identity choice = Option A guarded t
   `channels.imessage.allowFrom` (dmPolicy=allowlist so only family is processed),
   (2) set channels.imessage.cliPath=/usr/local/bin/imsg-over-ssh + enable, (3) test from
   the wife's phone. Channel still OFF; no iMessage sent.
+
+## Option B: identity switch  (status: WIP, 2026-09-13)
+The repo is PUBLIC. Never write the assistant's email or number, or any family phone
+number, in this file, in commits, or in PR text. They live only in each brain host's
+`.env` (gitignored) and move between hosts over Taildrop.
+
+Private values (names only):
+- `ASSISTANT_IMESSAGE_EMAIL` - the assistant's Apple ID email (Messages app only).
+- `ASSISTANT_IMESSAGE_NUMBER` - the assistant's phone number, registered for iMessage.
+- `IMESSAGE_ALLOW_FROM` - comma list of family handles the brain may act on (Mark's
+  phone and Apple ID email, and Mark's wife's phone).
+
+Mac state (Mac Claude, verified 2026-09-13):
+- Messages > Settings > iMessage shows the assistant Apple ID. Reachable at the
+  assistant number and email. New conversations start from the assistant number.
+  Messages in iCloud is OFF.
+- A test iMessage from Mark's iPhone arrived on the assistant account and number
+  (chat.db `account` and `destination_caller_id`). `imsg rpc chats.list` sees it.
+- The Mac `.env` has the three private values above.
+- Note: `~/Library/Preferences/com.apple.madrid.plist` still lists Mark's old addresses.
+  That file lags. Trust Messages settings and chat.db instead.
+- Nothing changes in the gate or the wrapper. imsg sends from whatever account Messages
+  is signed in to.
+
+| # | Who | Step | Status |
+|---|---|---|---|
+| 1 | Mac | Send `assistant-identity.env` (the three private values) to the PC over Taildrop | DONE |
+| 2 | PC | `git pull`. Find `assistant-identity.env` (Downloads or `tailscale file get`). Append its three lines to the PC `.env`, then delete the received file. Do not print the values in chat or commit them | TODO |
+| 3 | PC | Set `channels.imessage.allowFrom` from `IMESSAGE_ALLOW_FROM` (dmPolicy=allowlist). Do NOT add the assistant's own email or number (reply-loop risk). Keep the values in openclaw.json only, never in git | TODO |
+| 4 | PC | Set `channels.imessage.cliPath=/usr/local/bin/imsg-over-ssh`, enable the channel, restart the container | TODO |
+| 5 | PC + Mark | Test 1: Mark texts the assistant NUMBER from his iPhone. This is a real test now, because Mark's phone is a different Apple ID. Expect a reply from the assistant | TODO |
+| 6 | Mac | During test 1, watch `~/.imsg-bridge/gate.log`. If OpenClaw's send is denied, add the needed method to the gate allowlist after review | TODO |
+| 7 | PC + wife | Test 2: Mark's wife texts the assistant number | TODO |
+| 8 | PC | Send `pc-optionb-status.txt` to macbook-air: allowFrom count (not values), channel enabled yes/no, test 1 and 2 results, errors. No handles, no message text | TODO |
+
+Open issues for Option B (need Mark's decision or action):
+- OLD PERSONAL HISTORY: chat.db on the Mac still holds Mark's old iMessage history (529
+  chats, about 11,000 messages). Switching accounts does not delete it. The brain can
+  still list those chats through `chats.list` and read them with `messages.history`.
+  `allowFrom` limits whom the brain answers, not what it can read. Choose one:
+  (a) delete the Mac copy of the old history (Mark's iPhone keeps its copy), or
+  (b) add a gate filter that hides chats not on the assistant account. Until then,
+  treat Mark's old history as visible to the brain.
+- SMS FORWARDING: the Mac's SMS account is still connected (Text Message Forwarding
+  from Mark's iPhone). Turn it off on Mark's iPhone: Settings > Apps > Messages > Text
+  Message Forwarding > MacBook Air = off. Otherwise the brain could read and send SMS as
+  Mark.
+- The PC Phase B notes above say "identity choice = Option A guarded test". That is
+  replaced by this section. allowFrom now protects the assistant account, and Mark is a
+  valid tester.
 
 ## Runbooks
 - docs/runbooks/openclaw-on-windows.md - PC brain (Docker, harden, Tailscale serve)
