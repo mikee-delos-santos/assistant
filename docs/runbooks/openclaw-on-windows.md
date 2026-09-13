@@ -47,3 +47,38 @@ internet. Do NOT bind 18789 to `0.0.0.0`.
 - `restart: unless-stopped` brings the container back after Docker/host restarts.
 - In Windows power settings, disable sleep/hibernate for the brain user.
 - In BIOS set "restore on power loss" so the PC returns after an outage.
+
+## Troubleshooting
+
+### Reminders/cron fail: `EPERM: operation not permitted, chmod '/home/node/.openclaw'`
+
+Symptom: the assistant can't save a reminder; logs show OpenClaw's cron tool failing
+with `EPERM ... chmod '/home/node/.openclaw'`. The assistant may misdiagnose this as a
+general permission problem and ask you to `sudo chown` in WSL - that is the wrong fix
+(that path is inside the container, not WSL, and node can already write there).
+
+Cause: `/home/node/.openclaw` is a Windows bind mount (`./data/openclaw`). Its mount root
+comes up owned by `root`, and OpenClaw's cron `chmod`s that directory to lock it down.
+node (uid 1000) can't chmod a root-owned directory, so the job fails. Note node can still
+write there (the dir is world-writable); only the chmod fails.
+
+Fix (run inside the container, not WSL):
+
+```
+docker exec -u root openclaw chown node:node /home/node/.openclaw
+```
+
+Verify node can now chmod it and cron saves a job:
+
+```
+docker exec openclaw sh -c 'chmod 700 /home/node/.openclaw && echo ok'
+docker exec openclaw sh -c 'openclaw cron add --at "+2h" perm-test "test"; openclaw cron list'
+# then remove it by the id printed above: openclaw cron rm <id>
+```
+
+This survives `docker compose restart` and `docker compose up -d --force-recreate`
+(Docker Desktop keeps the ownership on the bind mount), so it is a one-time fix. If a
+future Docker Desktop update resets it, re-run the chown.
+
+Unrelated: `elevated access isn't available` / `tools.elevated.enabled` off is intentional -
+the assistant cannot run elevated shell commands from a chat channel. Leave it off.
