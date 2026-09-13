@@ -1,0 +1,9 @@
+# Keep secrets and runtime data out of the Docker build context
+data/
+.env
+.env.*
+.git/
+pwa/
+docs/
+qa/
+*.md

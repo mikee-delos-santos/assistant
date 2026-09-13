@@ -9,9 +9,12 @@
 
 services:
   openclaw:
-    # Pin a real version before relying on this (never run :latest in production).
-    # Tags: https://github.com/openclaw/openclaw/pkgs/container/openclaw
-    image: ghcr.io/openclaw/openclaw:latest
+    # Custom image = pinned OpenClaw base + openssh-client + the imsg-over-ssh
+    # wrapper (see Dockerfile.imsg). Build/rebuild with: docker compose up -d --build
+    build:
+      context: .
+      dockerfile: Dockerfile.imsg
+    image: assistant/openclaw:with-ssh
     container_name: openclaw
     restart: unless-stopped
     env_file:
@@ -26,11 +29,20 @@ services:
       - ./data/openclaw:/home/node/.openclaw
       # Auth-profile secret encryption key - keep on the host, never in git.
       - ./data/openclaw-secret:/home/node/.config/openclaw
+      # imsg-over-SSH key + known_hosts. Linux-native named volume so the key stays
+      # 600 (ssh refuses the 0777 that a Windows bind mount would show). Read-only.
+      - openclaw_imsg_ssh:/home/node/.ssh-imsg:ro
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - NET_RAW
       - NET_ADMIN
+
+volumes:
+  # Create + populate once (per host): docker volume create openclaw_imsg_ssh, then
+  # copy id_ed25519 (chmod 600) and known_hosts in, owned by uid 1000.
+  openclaw_imsg_ssh:
+    external: true
 
 # First run (after adding keys to .env):
 #   docker compose up -d
