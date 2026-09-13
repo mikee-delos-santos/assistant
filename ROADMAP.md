@@ -96,19 +96,56 @@ PC status / TODOs:
   visible Warp window running `claude` on the Windows desktop - Brice cannot reach the
   Windows GUI from the container. Then a Brice skill + synced routing note (Mark-only).
 
-Mac Claude TODOs (pull this, then do):
-1. Set `remoteControlAtStartup: true` in BOTH `~/.claude/settings.json` AND
-   `~/.claude-corporate/settings.json`.
-2. Resolve the two Mac project directories under `~/workspace` (Mark will confirm which is
-   which). Record the real names/paths ONLY in the synced workspace map, not in this repo.
-3. Add a narrow forced-command (same pattern as the imsg gate, with a SEPARATE SSH key - do
-   not reuse the imsg key or loosen the imsg gate) that does exactly one thing per project:
-   open a visible Warp window (Warp launch config or `open -a Warp`) running `claude` in that
-   project's dir, with the correct `CLAUDE_CONFIG_DIR` (corporate project ->
-   `~/.claude-corporate`; personal -> `~/.claude`). The project name must be an allowlisted
-   enum, not free text.
-4. Publish the invocation contract here (how the PC signals which project) so Brice can call
-   it without touching a raw shell.
+Mac Claude status (2026-09-13):
+1. DONE: `remoteControlAtStartup: true` in `~/.claude/settings.json` and
+   `~/.claude-corporate/settings.json` (backups next to each file). Checked: no API-key
+   auth, proxy, or telemetry-off setting that would block Remote Control.
+2. DONE: two Mac projects chosen by Mark. Keys in this repo: `mindr` (default Claude config)
+   and `work` (corporate, `~/.claude-corporate`). The real folders are ONLY in the private
+   map `~/.claude-launch/projects.json` (Mac) and in the synced workspace note
+   `data/openclaw/workspace/CLAUDE-SESSIONS.md` (not in git).
+3. DONE: launch gate `scripts/claude-launch-gate.py`, installed as
+   `~/.claude-launch/claude-launch-gate`. Adversarial review done, findings fixed:
+   - Accepts only `list` and `launch <key>`; keys come from the private map; paths must be
+     ASCII and under `~/workspace`; config dir must be `~/.claude` or `~/.claude-corporate`.
+   - Writes `~/.warp/launch_configurations/brice-<key>.yaml` and opens
+     `warp://launch/brice-<key>.yaml` (a visible Warp window). Tested: an SSH login can open
+     a Warp window and run a command (self-test PASS).
+   - `mindr` runs `env -u CLAUDE_CONFIG_DIR command claude` (setting CLAUDE_CONFIG_DIR to
+     ~/.claude would move the state file and show login prompts). `work` runs
+     `CLAUDE_CONFIG_DIR=~/.claude-corporate command claude`.
+   - Limits (file lock): 1 per project per 60s, 1 of any project per 5 min, 10 per day.
+   - A success means "launch requested", not "session ready".
+   - Known and accepted: starting `claude` runs shell init and plugin SessionStart hooks
+     in that folder, at a time the brain picks; the window is visible on the Mac screen.
+4. DONE: invocation contract below.
+5. TODO (Mark, one time): launch `mindr` once by hand through the gate to confirm it starts
+   logged in with Remote Control (see "Mac check" below).
+
+Invocation contract (Mac projects):
+```
+ssh -T -i <launch key> -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o UserKnownHostsFile=<known_hosts> -o StrictHostKeyChecking=yes \
+    mikee@100.67.66.94 <command>
+
+<command> = list            -> {"ok": true, "projects": ["mindr", "work"]}
+<command> = launch <key>    -> {"ok": true, "project": "<key>", "note": "launch requested; ..."}
+                               {"ok": false, "error": "<reason>"}   (unknown project, limits, Warp)
+```
+- Windows OpenSSH needs `-o KexAlgorithms=curve25519-sha256` (same as the imsg key).
+- The Mac host key and known_hosts are the same as for the imsg key.
+
+| # | Who | Step | Status |
+|---|---|---|---|
+| S1 | PC | Make a SEPARATE key for launches, stored like the imsg key (Linux named volume, chmod 600, owned by uid 1000), comment exactly `brice-launch`. Never reuse the imsg key | TODO |
+| S2 | PC | Send ONLY the public key to the Mac: copy it to `pc-brice-launch.pub`, `tailscale file cp pc-brice-launch.pub macbook-air:`, delete the copy | TODO |
+| S3 | Mark (Mac) | Install it: `bash scripts/install-launch-key.sh <path to pc-brice-launch.pub>`. It adds `from="100.123.4.5",restrict,command=<launch gate>` and refuses a key already used for imsg | TODO |
+| S4 | PC | From the container, run the contract with `list`. Expect `["mindr","work"]`. Do NOT run `launch` yet | TODO |
+| S5 | PC | Brice skill + routing: Mark-only trigger; map "mindr"/"work" to the Mac contract, "infopathy" to the PC helper; read `CLAUDE-SESSIONS.md`; never a raw shell | TODO |
+| S6 | Mark + PC | First real test: Mark texts Brice to launch `mindr`; confirm the Warp window opens on the Mac and the session shows in the Claude app | TODO |
+
+Mac check for step 5 (Mark, at the Mac; opens a real session window):
+`SSH_ORIGINAL_COMMAND="launch mindr" /usr/bin/python3 ~/.claude-launch/claude-launch-gate`
 
 ## Architecture (see docs/decisions/0001-architecture.md)
 PC = always-on primary brain. Mac = warm backup brain + the "Apple bridge" for
