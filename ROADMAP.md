@@ -123,8 +123,10 @@ Mac Claude status (2026-09-13):
    - Known and accepted: starting `claude` runs shell init and plugin SessionStart hooks
      in that folder, at a time the brain picks; the window is visible on the Mac screen.
 4. DONE: invocation contract below.
-5. TODO (Mark, one time): launch `mindr` once by hand through the gate to confirm it starts
-   logged in with Remote Control (see "Mac check" below).
+5. DONE 2026-09-13 (Mark): launched `work` and `mindr` by hand through the gate. Both opened
+   a Warp window with Claude ready (no login or trust prompt) and both showed up in the
+   Claude app. `mindr` now points one level lower (the app folder inside the mindr dir;
+   private map only).
 
 Invocation contract (Mac projects):
 ```
