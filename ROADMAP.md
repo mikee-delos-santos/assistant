@@ -400,6 +400,45 @@ PC go-live attempt 2026-09-13 (PC Claude):
   retry test 1. (Mac already pushed a small gate change; awaiting confirmation it is
   installed and covers both.)
 
+Mac reply + go-live retry 2026-09-13 (Mac Claude). Gate fixes, all installed on the Mac:
+- `imsg rpc --help` / `-h` allowed (usage text only). PR #24.
+- `watch.subscribe`: the blocked key was `attachments` with value false. Attachment
+  switches are now allowed when exactly `false`; `true` is still denied. PR #25.
+- imsg errors are no longer hidden. Every JSON-RPC error has a `message` key, which the
+  content check wrongly treated as an iMessage. The gate now passes the error `code`,
+  `message`, and a short string `data` (the reason). PR #27.
+- `send-rich` (argv) stays DENIED on purpose: it needs SIP off + dylib injection, which
+  this Mac does not have (`imsg status`: advanced features not available). OpenClaw
+  should fall back to plain `send`. If it does not, tell the Mac.
+
+What happened on retry 1 (Mac view):
+- After the restart, the provider connected: a gate session opened and `watch.subscribe`
+  worked.
+- 17:54:25 Mark's iPhone texted the assistant number. The Mac received it on the
+  assistant account (test 1 inbound = PASS).
+- 17:54:38 OpenClaw's reply attempt got an imsg ERROR, which the old gate hid. No reply
+  was sent. The gate session that handled it still runs the OLD gate code, so the
+  real error text is not known yet.
+
+| # | Who | Step | Status |
+|---|---|---|---|
+| R1 | PC | `git pull`, then `docker compose restart openclaw` (a new bridge session picks up the fixed gate) | TODO |
+| R2 | PC | Confirm the iMessage provider starts and stays up (no restart loop) | TODO |
+| R3 | PC | Tell Mark to text the assistant number again from his iPhone | TODO |
+| R4 | PC | If no reply: read the OpenClaw log for the reply attempt and copy only the error text (the gate now passes imsg's reason, e.g. `Invalid params` + `unknown send param: x`). No handles, no message text | TODO |
+| R5 | PC | Check which method OpenClaw used to reply: rpc `send`, `send.tracked`, or argv `imsg send` / `send-rich`. The gate allows only rpc `send` and argv `send` | TODO |
+| R6 | PC | Send `pc-optionb-status.txt` to macbook-air with R2-R5 results. The Mac Claude also reads `~/.imsg-bridge/gate.log`, which now logs `imsg-error code=... message | reason` | TODO |
+
+Notes for the reply path (from imsg v0.15.4 source):
+- rpc `send` accepts: `to`, `text`, `file` (denied by the gate), `service`, `transport`,
+  `region`, `allow_sms_fallback`, `reply_to`, and chat target keys. Anything else gives
+  `Invalid params`.
+- `send.tracked` needs the bridge transport (not available on this Mac) and is not in
+  the gate allowlist.
+- `region` defaults to `US`. Philippine numbers may need `region: "PH"` or `+63` format.
+- `reply_to` (a threaded reply) may need the bridge. If the error mentions bridge or
+  reply, turn threaded replies off in OpenClaw's iMessage config.
+
 ## Runbooks
 - docs/runbooks/openclaw-on-windows.md - PC brain (Docker, harden, Tailscale serve)
 - docs/runbooks/mac-backup-brain.md - Mac from-scratch: backup brain + iMessage bridge
