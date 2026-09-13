@@ -28,6 +28,46 @@ Status legend: DONE | WIP (in progress) | TODO | DEFERRED
   Apple Account is still Mark's. A test from Mark's iPhone reached the assistant number.
   The handles are private: see "Option B: identity switch" below.
 - Assistant name / persona: NOT chosen yet (it becomes the iMessage contact name).
+- What to do next: see "Next steps" just below.
+
+## Next steps (updated 2026-09-13, after iMessage go-live)
+Read this first. PC Claude: `git pull` before acting, and before editing this file.
+Each row names who does it. "Mark" rows are decisions or phone/GUI actions.
+
+Do now
+| # | Who | Task | Notes |
+|---|---|---|---|
+| N1 | Mark | Do NOT install the pending macOS update on the Mac yet | Updates can reset Full Disk Access + Automation and break the bridge. After updating, ask Mac Claude to re-check permissions and run a text test |
+
+Soon - make the assistant yours
+| # | Who | Task | Notes |
+|---|---|---|---|
+| N2 | Mark + PC | First-run chat to set identity: `docker exec -it openclaw openclaw chat`, follow `BOOTSTRAP.md` | Fills `IDENTITY.md` (name, vibe), `SOUL.md` (values, Boundaries), `USER.md` (Mark + family). Files live in `data/openclaw/workspace` (synced to the Mac, NOT in git). No secrets in them |
+| N3 | Mark | Decide red lines; mark each HARD or SOFT | SOFT = written in `AGENTS.md` Red Lines / `SOUL.md` Boundaries (the model follows them but can be tricked). HARD = enforced in code: PC `openclaw.json` (allowFrom, dmPolicy) or the Mac gate. Send the HARD list to Mac Claude / PC Claude |
+| N4 | Mark | Save the assistant number as a contact (the name from N2) on Mark's and his wife's phones | |
+| N5 | Wife (optional) | Wife texts the assistant number; expect a reply | Her handle is already in allowFrom. Option B step 7 |
+
+PC Claude cleanups
+| # | Who | Task | Notes |
+|---|---|---|---|
+| N6 | PC | `git pull`; turn off threaded replies in OpenClaw's iMessage channel config | The Mac gate strips `reply_to` today (no imsg bridge on this Mac). Check the exact key in OpenClaw docs/config; restart; Mark texts once to confirm replies still work. Record the key here |
+| N7 | PC | Update the old Option A / Phase B notes if anything still says "Option A" is current | Option B is current |
+
+Later
+| # | Who | Task | Notes |
+|---|---|---|---|
+| L1 | Mac + PC | Failover drill (Mac brain) | The gate only accepts the PC key (`from=100.123.4.5`). A Mac brain needs its own key, wrapper, and authorized_keys line for the Docker source address first. Then: stop PC brain, start Mac brain, check memory + iMessage, fail back |
+| L2 | Mac + PC | Syncthing: verify live updates both ways and restart after a reboot | Only the first sync (25/25 files) is verified |
+| L3 | Mac + PC | Exclude `.git` from the synced workspace (`.stignore` on BOTH hosts) | A failover mid-sync could break OpenClaw's git index |
+| L4 | Mark | Encrypted backup of the workspace; FileVault on the Mac | Memory will hold family data |
+| L5 | Mark | Consider making the GitHub repo private | It holds tailnet names and IPs (no secrets, no handles) |
+| L6 | PC | Memory read/write test; approve iPhone pairing to the PC web UI; mobile-data (CGNAT) check | Old Phase 0/1 leftovers |
+| L7 | Mac | Group chats and attachments | Both are denied by the gate today. Needs a design before enabling |
+
+Done today (for context): Mac onboarded; Syncthing linked; PC runs imsg over SSH
+through the Mac gate; Option B identity live; gate hides Mark's old history; SMS
+forwarding to the Mac is effectively off (the iPhone no longer lists the Mac, and no
+SMS rows arrived since the switch); end-to-end reply confirmed from the assistant number.
 
 ## Architecture (see docs/decisions/0001-architecture.md)
 PC = always-on primary brain. Mac = warm backup brain + the "Apple bridge" for
@@ -376,10 +416,9 @@ Open issues for Option B (need Mark's decision or action):
   - Known limits: sender and participant names can come from the Mac's Contacts (Mark's
     address book). A tapback on an old message could quote a short snippet. Both are
     accepted for now.
-- SMS FORWARDING: the Mac's SMS account is still connected (Text Message Forwarding
-  from Mark's iPhone). Turn it off on Mark's iPhone: Settings > Apps > Messages > Text
-  Message Forwarding > MacBook Air = off. Otherwise the brain could read and send SMS as
-  Mark.
+- SMS FORWARDING: RESOLVED 2026-09-13. The iPhone no longer lists the Mac for Text
+  Message Forwarding, and no SMS rows arrived on the Mac since the switch. The gate also
+  denies SMS sends.
 - The PC Phase B notes above say "identity choice = Option A guarded test". That is
   replaced by this section. allowFrom now protects the assistant account, and Mark is a
   valid tester.
@@ -490,7 +529,9 @@ Known limits and follow-ups:
 - PC cleanup (optional): turn off threaded replies in OpenClaw's iMessage config, so the
   gate does not need to strip `reply_to`; `git pull`.
 - Mark's wife test (step 7): optional, not done yet.
-- SMS forwarding from Mark's iPhone to this Mac is still on (turn off).
+- SMS forwarding to this Mac: effectively OFF (2026-09-13). The iPhone no longer lists the
+  Mac (different Apple IDs for Messages), and no SMS rows arrived since the switch. The
+  Mac's SMS account label still says "connected"; ignore it. The gate also blocks SMS.
 - Do not install the pending macOS update until the bridge is stable; updates can reset
   Full Disk Access and Automation permissions.
 
