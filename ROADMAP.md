@@ -159,7 +159,7 @@ Trigger contract (PC project - Infopathy):
 | S3 | Mark (Mac) | Install it: `bash scripts/install-launch-key.sh <path to pc-brice-launch.pub>`. It adds `from="100.123.4.5",restrict,command=<launch gate>` and refuses a key already used for imsg | DONE 2026-09-13 - fingerprint SHA256:qYkp...n8lo installed with from/restrict/gate |
 | S4 | PC | From the container, run the contract with `list`. Expect `["mindr","work"]`. Do NOT run `launch` yet | DONE 2026-09-13 - returned `{"ok":true,"projects":["mindr","work"]}` |
 | S5 | PC | Brice skill + routing: Mark-only trigger; map "mindr"/"work" to the Mac contract, "infopathy" to the PC helper; read `CLAUDE-SESSIONS.md`; never a raw shell | DONE 2026-09-13 - `claude-launch <key>` wrapper (in the image; infopathy->PC trigger, mindr/work->Mac gate, refuses other keys) + `launch-claude-session` skill (ready) + CLAUDE-SESSIONS.md updated |
-| S6 | Mark + PC | First real test: Mark texts Brice to launch `mindr`; confirm the Warp window opens on the Mac and the session shows in the Claude app | TODO |
+| S6 | Mark + PC | First real test: Mark texts Brice to launch `mindr`; confirm the Warp window opens on the Mac and the session shows in the Claude app | DONE 2026-09-13 - Mark confirmed: works perfectly (Warp window on the Mac + session in the Claude app) |
 | P1 | PC | Infopathy host helper: watcher script + logon task installed and running; container has the trigger mount + launch key mount | DONE 2026-09-13 |
 | P2 | Mark + PC | Test Infopathy: Brice drops trigger `infopathy`; confirm a visible Warp window opens running `claude` in `infopathy-workspace` and the session shows in the Claude app | DONE 2026-09-13 - end-to-end confirmed (Mark saw the window). Gotcha: Warp on Windows reads launch configs from Roaming (`%APPDATA%\warp\Warp\data\launch_configurations`), NOT Local |
 
@@ -221,8 +221,8 @@ Runbook: docs/runbooks/mac-backup-brain.md (full from-scratch Mac onboarding).
 Runbook: docs/runbooks/chores-mcp-integration.md
 | Task | Status | Notes |
 |---|---|---|
-| Connect brain to Chores MCP (POST /mcp) | TODO | needs admin JWT |
-| Store/rotate the Chores admin JWT | TODO | full family admin secret |
+| Connect brain to Chores MCP (POST /mcp) | DONE 2026-09-13 | mcp.servers.chore-app -> Railway backend /mcp; probe shows 6 tools |
+| Store/rotate the Chores admin JWT | DONE (stored) 2026-09-13 | JWT in .env (gitignored); rotation steps in runbook |
 | Voice intents: list_children / list_chores | TODO | read-only first |
 | Voice intents: create_chore / post_from_template | TODO | read-back confirm |
 | Voice intents: approve/reject + coin-move guard | TODO | spoken confirmation |
