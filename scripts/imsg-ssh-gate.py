@@ -99,6 +99,9 @@ OFF_SWITCHES = {"attachments", "convert_attachments"}
 REPLY_KEYS = ("reply_to", "replyTo", "reply_to_guid", "message_guid")
 # Fields of an imsg delivery-failure error that carry the reason, not message data.
 DELIVERY_KEYS = ("retry_safe", "disposition", "transport", "operation", "detail")
+CHAT_TARGET_KEYS = ("chat_id", "chat_identifier", "chat_guid")
+SMS_FALLBACK_KEYS = ("allow_sms_fallback", "allowSMSFallback")
+ONE_TO_ONE_STYLE = 45  # chat.style for a 1:1 chat; 43 is a group
 
 
 def risky_key(value):
@@ -198,6 +201,29 @@ class Visibility:
             "select distinct j.chat_id from chat_message_join j join message m"
             " on m.ROWID = j.message_id where j.chat_id in ({keys}) and %s",
             self._ints(ids))
+
+    def one_to_one_handle(self, params):
+        """Return the other person's handle for a visible 1:1 chat target, else None."""
+        supplied = [k for k in CHAT_TARGET_KEYS if k in params]
+        if len(supplied) != 1:
+            return None
+        key, value = supplied[0], params[supplied[0]]
+        column = {"chat_id": "ROWID", "chat_identifier": "chat_identifier", "chat_guid": "guid"}[key]
+        if key == "chat_id" and (not isinstance(value, int) or isinstance(value, bool)):
+            return None
+        if key != "chat_id" and not isinstance(value, str):
+            return None
+        if self._conn is None:
+            self._conn = sqlite3.connect("file:%s?mode=ro" % CHAT_DB, uri=True, timeout=5,
+                                         check_same_thread=False)
+        row = self._conn.execute(
+            "select ROWID, style, chat_identifier from chat where %s = ? limit 1" % column,
+            (value,)).fetchone()
+        if not row or row[1] != ONE_TO_ONE_STYLE or not row[2]:
+            return None
+        if row[0] not in self.visible_chat_ids([row[0]]):
+            return None
+        return row[2]
 
     def filter_messages(self, items):
         items = [m for m in items if isinstance(m, dict)]
@@ -440,6 +466,26 @@ def run_rpc(args):
                     del params[k]
                 if stripped:
                     log("strip", "removed %s from send (no bridge on this Mac)" % ",".join(stripped))
+                # Never fall back to SMS: SMS on this Mac can go out through Mark's iPhone.
+                if str(params.get("service", "auto")).lower() == "sms":
+                    reject(request_id, "sms sends are not allowed")
+                    continue
+                for k in SMS_FALLBACK_KEYS:
+                    params.pop(k, None)
+                params["allow_sms_fallback"] = False
+                # After the Apple ID switch, Messages' AppleScript cannot find 1:1 chats by
+                # chat id (-1728), but sending to the handle works. Rewrite visible 1:1 chats.
+                if "to" not in params:
+                    try:
+                        handle = visibility.one_to_one_handle(params)
+                    except sqlite3.Error:
+                        handle = None
+                    if handle:
+                        for k in CHAT_TARGET_KEYS:
+                            params.pop(k, None)
+                        params["to"] = handle
+                        params["service"] = "imessage"
+                        log("retarget", "1:1 chat send now addressed to its handle")
             line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
         except Exception as err:
             # Any surprise (deep nesting, 1e400, odd types) is a denial, never a crash.
