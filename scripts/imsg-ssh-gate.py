@@ -102,6 +102,36 @@ DELIVERY_KEYS = ("retry_safe", "disposition", "transport", "operation", "detail"
 CHAT_TARGET_KEYS = ("chat_id", "chat_identifier", "chat_guid")
 SMS_FALLBACK_KEYS = ("allow_sms_fallback", "allowSMSFallback")
 ONE_TO_ONE_STYLE = 45  # chat.style for a 1:1 chat; 43 is a group
+OSASCRIPT = "/usr/bin/osascript"
+SEND_TIMEOUT = 30
+# Same AppleScript path as `imsg send` when it has no existing chat: address the buddy on
+# the iMessage service. Recipient and text arrive as arguments, never inside the script.
+BUDDY_SEND_SCRIPT = """on run argv
+    set theRecipient to item 1 of argv
+    set theMessage to item 2 of argv
+    set dryRun to item 3 of argv
+    tell application "Messages"
+        set targetService to first service whose service type is iMessage
+        set targetBuddy to buddy theRecipient of targetService
+        if dryRun is "1" then return "dry-run " & (id of targetBuddy)
+        send theMessage to targetBuddy
+    end tell
+    return "sent"
+end run
+"""
+
+
+def buddy_send(handle, text, dry_run=False):
+    """Send one iMessage to a handle. Returns (ok, detail)."""
+    try:
+        done = subprocess.run([OSASCRIPT, "-", handle, text, "1" if dry_run else "0"],
+                              input=BUDDY_SEND_SCRIPT.encode(), capture_output=True,
+                              timeout=SEND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, "osascript timed out"
+    if done.returncode != 0:
+        return False, done.stderr.decode("utf-8", "replace").strip()[:300]
+    return True, done.stdout.decode("utf-8", "replace").strip()[:80]
 
 
 def risky_key(value):
@@ -473,19 +503,37 @@ def run_rpc(args):
                 for k in SMS_FALLBACK_KEYS:
                     params.pop(k, None)
                 params["allow_sms_fallback"] = False
-                # After the Apple ID switch, Messages' AppleScript cannot find 1:1 chats by
-                # chat id (-1728), but sending to the handle works. Rewrite visible 1:1 chats.
-                if "to" not in params:
+                # After the Apple ID switch, imsg always resolves a 1:1 send to the old chat in
+                # chat.db, which Messages cannot find (AppleScript -1728). For a visible 1:1
+                # chat the gate sends by buddy handle itself. Visible means the person has
+                # messaged the assistant, so the brain cannot start chats with strangers.
+                target = dict((k, params[k]) for k in CHAT_TARGET_KEYS if k in params)
+                if not target and isinstance(params.get("to"), str):
+                    target = {"chat_identifier": params["to"].strip()}
+                try:
+                    handle = visibility.one_to_one_handle(target) if target else None
+                except sqlite3.Error:
+                    handle = None
+                text = params.get("text")
+                if handle and isinstance(text, str) and text.strip():
+                    ok, detail = buddy_send(handle, text)
+                    if ok:
+                        log("direct-send", "ok (1:1, %d chars)" % len(text))
+                        result = {"jsonrpc": "2.0", "id": request_id,
+                                  "result": {"ok": True, "transport": "applescript",
+                                             "service": "iMessage"}}
+                    else:
+                        log("direct-send", "failed: %s" % detail[:200])
+                        result = {"jsonrpc": "2.0", "id": request_id,
+                                  "error": {"code": -32603, "message": "Delivery failed",
+                                            "data": {"transport": "applescript",
+                                                     "operation": "send",
+                                                     "detail": detail}}}
                     try:
-                        handle = visibility.one_to_one_handle(params)
-                    except sqlite3.Error:
-                        handle = None
-                    if handle:
-                        for k in CHAT_TARGET_KEYS:
-                            params.pop(k, None)
-                        params["to"] = handle
-                        params["service"] = "imessage"
-                        log("retarget", "1:1 chat send now addressed to its handle")
+                        write_line((json.dumps(result) + "\n").encode())
+                    except OSError:
+                        finish(141)
+                    continue
             line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
         except Exception as err:
             # Any surprise (deep nesting, 1e400, odd types) is a denial, never a crash.
