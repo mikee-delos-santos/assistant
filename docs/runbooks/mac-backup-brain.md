@@ -87,9 +87,11 @@ The PC is the active brain. Starting the Mac container now = two brains writing 
 same memory = split-brain. Leave the Mac container stopped until an actual failover.
 
 ## 9. Failover - promote the Mac to brain (only when the PC is down)  [CLI]
-Tested for real on 2026-09-15. The exact commands, keys, and config used are in
-ROADMAP.md "Handoff: Mac brain failover drill". The Mac is already set up now, so a
-normal failover is only: PC off, then `docker compose up -d` on the Mac.
+Tested for real on 2026-09-15. What was built on the Mac (image, key volumes, gate lines,
+OpenClaw config) is described in ROADMAP.md "Handoff: Mac brain failover drill". That
+section also lists what was still open (Chores token, launch key line). Once those rows
+are done, a failover is: confirm the PC brain is stopped, then `docker compose up -d` on
+the Mac. Steps 2 and 3 below are the from-scratch version and are already done on this Mac.
 
 1. Confirm the PC gateway is actually stopped (avoid two brains).
 2. `cd ~/workspace/assistant && docker compose up -d`

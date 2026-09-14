@@ -17,30 +17,45 @@
 # Remote-control sessions are tied to Mark's claude.ai account, so only Mark can attach.
 set -eu
 
-brain_host="${BRAIN_HOST:-pc}"
-case "$brain_host" in
-  pc|mac) ;;
-  *)
-    echo '{"ok":false,"error":"BRAIN_HOST must be pc or mac"}' >&2
-    exit 2
-    ;;
-esac
+# Trim spaces and a Windows CR, and lowercase, so "PC" or "pc\r" from a hand-edited .env
+# still work. Only infopathy and where need a valid value; mindr/work do not depend on it.
+brain_host=$(printf '%s' "${BRAIN_HOST:-pc}" | tr -d ' \t\r' | tr 'A-Z' 'a-z')
+[ -n "$brain_host" ] || brain_host=pc
+
+require_brain_host() {
+  case "$brain_host" in
+    pc|mac) ;;
+    *)
+      echo '{"ok":false,"error":"BRAIN_HOST must be pc or mac"}' >&2
+      exit 2
+      ;;
+  esac
+}
 
 fail() {
-  printf '{"ok":false,"brain_host":"%s","error":"%s"}\n' "$brain_host" "$1" >&2
+  # Only a known value goes into the JSON, so a strange BRAIN_HOST cannot break it.
+  case "$brain_host" in pc|mac) shown=$brain_host ;; *) shown=invalid ;; esac
+  printf '{"ok":false,"brain_host":"%s","error":"%s"}\n' "$shown" "$1" >&2
   exit 1
 }
 
 ssh_gate() {
-  # The Mac brain has no launch key yet, and the gate only trusts the PC's key.
-  # Say so plainly instead of dying on an unset variable.
+  # A brain without launch key settings must say so plainly, not die on an unset variable.
   if [ -z "${LAUNCH_SSH_KEY:-}" ] || [ -z "${LAUNCH_SSH_KNOWN_HOSTS:-}" ] \
      || [ -z "${LAUNCH_SSH_TARGET:-}" ] || [ ! -r "$LAUNCH_SSH_KEY" ]; then
     fail "launch key is not set up on this brain; Mac sessions can only be launched when the brain has its launch key"
   fi
-  exec ssh -T -i "$LAUNCH_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+  # The gate prints its own JSON. Exit 255 means ssh itself failed (for example the Mac
+  # does not accept this brain's key), so turn that into JSON too.
+  if ssh -T -i "$LAUNCH_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
     -o UserKnownHostsFile="$LAUNCH_SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
-    -o ServerAliveInterval=30 -- "$LAUNCH_SSH_TARGET" "$1"
+    -o ServerAliveInterval=30 -- "$LAUNCH_SSH_TARGET" "$1"; then
+    exit 0
+  else
+    rc=$?
+  fi
+  [ "$rc" -ne 255 ] || fail "could not reach the Mac launch gate over ssh (key not accepted or Mac unreachable)"
+  exit "$rc"
 }
 
 project="${1:-}"
@@ -48,6 +63,7 @@ case "$project" in
   infopathy)
     # The trigger folder is only watched on the PC. On the Mac brain the file would
     # sit there unread while Brice reports success.
+    require_brain_host
     [ "$brain_host" = "pc" ] || fail "infopathy launches only work when the PC is the brain; the Mac is the brain now"
     : > /home/node/.launch-triggers/infopathy
     echo '{"ok":true,"project":"infopathy","note":"launch requested on the PC; open the Claude app - do not assume it is ready yet"}'
@@ -59,6 +75,7 @@ case "$project" in
     ssh_gate "list"
     ;;
   where)
+    require_brain_host
     printf '{"ok":true,"brain_host":"%s"}\n' "$brain_host"
     ;;
   *)

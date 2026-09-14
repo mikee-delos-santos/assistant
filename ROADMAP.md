@@ -117,18 +117,21 @@ Found during the drill:
   was copied). Chores tools do not work on the Mac brain until it is sent over Taildrop.
 - `send-rich` denied once at channel start, same as the PC (OpenClaw falls back to `send`).
 
-Fail back (order matters: never two brains at once)
+Fail back (order matters: never two brains at once, and never a brain on stale memory)
 | # | Who | Step | Status |
 |---|---|---|---|
-| F1 | Mark (Mac) | Add the `mac-brain-launch` authorized_keys line; Mac Claude tests `claude-launch list` from the Mac brain | TODO |
-| F2 | Mac | `docker compose stop openclaw` on the Mac; confirm it is stopped | TODO |
-| F3 | Mark | Turn the PC on AND log in (Syncthing on the PC starts at login, not at boot) | TODO |
-| F4 | PC | Before or right after boot: the PC brain auto-starts with `restart: unless-stopped`. Check the Mac brain is stopped (F2) | TODO |
-| F5 | PC | `git pull`; add `BRAIN_HOST=pc` to the PC `.env`; `docker compose up -d --build --force-recreate openclaw` (new wrapper in the image) | TODO |
-| F6 | PC | Check Syncthing is in sync and there are no `*sync-conflict*` files in the workspace. The Mac changed USER.md, TOOLS.md, CLAUDE-SESSIONS.md, and the launch skill | TODO |
-| F7 | PC | `docker exec openclaw claude-launch where` = `pc` | TODO |
+| F1 | Mark (Mac) | Add the `mac-brain-launch` line by hand: `from="127.0.0.1,::1",restrict,command="/Users/mikee/.claude-launch/claude-launch-gate" ssh-ed25519 <mac-brain-launch public key> mac-brain-launch`. Do NOT use `scripts/install-launch-key.sh`: it requires the comment `brice-launch`, hard-codes the PC IP, and deletes every ` brice-launch` line (the PC's launch key). Mac Claude then tests `claude-launch list` from the Mac brain | TODO |
+| F2 | Mac | `docker compose stop openclaw` on the Mac; confirm it is stopped. Only then tell Mark to turn on the PC | TODO |
+| F3 | Mark | Turn the PC on AND log in right away. The PC brain auto-starts at boot (`restart: unless-stopped`), but PC Syncthing starts only at login | TODO |
+| F4 | PC | Right after login: `docker compose stop openclaw`, so the PC brain does not answer or write memory on stale files | TODO |
+| F5 | PC | Wait until Syncthing shows the workspace folder "Up to Date" with the Mac. Check there are no `*sync-conflict*` files. The Mac changed USER.md, TOOLS.md, CLAUDE-SESSIONS.md, and the launch skill. If a conflict file exists, stop and tell Mark | TODO |
+| F6 | PC | `git pull`; add `BRAIN_HOST=pc` to the PC `.env`; `docker compose up -d --build --force-recreate openclaw` (new wrapper in the image) | TODO |
+| F7 | PC | `docker exec openclaw claude-launch where` = `pc`; `docker exec openclaw claude-launch list` still works with the PC key | TODO |
 | F8 | Mark | Text Brice "where are you running?"; expect PC | TODO |
 | F9 | PC | Taildrop `CHORES_MCP_TOKEN` to the Mac (an env line in a file, delete the copy after) | TODO |
+
+Known gap: between boot (F3) and F4 the PC brain runs on the old files. A text in that
+window can get a stale answer or create a conflict file. Keep the window short.
 
 Open decision for Mark: automatic failover (see "Proposal: automatic failover" below).
 
