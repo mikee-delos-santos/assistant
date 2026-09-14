@@ -20,6 +20,15 @@ class CLI(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.env["REMINDERS_DIR"], r["id"] + ".json")))
         code, l = self.run_cli("list")
         self.assertEqual(l["reminders"][0]["name"], "Trash"); self.assertNotIn("to", l["reminders"][0])
+    def test_add_text_once_normalizes_at_to_utc_z(self):
+        code, r = self.run_cli("add-text", "--to", "+639170000001", "--text", "Trash",
+                                "--name", "Trash", "--at", "2026-09-16T08:00:00+08:00")
+        self.assertEqual(code, 0)
+        self.assertEqual(r["next_run"], "2026-09-16 08:00")
+        with open(os.path.join(self.env["REMINDERS_DIR"], r["id"] + ".json")) as f:
+            data = json.load(f)
+        self.assertEqual(data["schedule"]["at"], "2026-09-16T00:00:00Z")
+
     def test_add_smart_once(self):
         code, r = self.run_cli("add-smart", "--to", "+639170000001", "--prompt", "Chores today?", "--name", "Chores", "--at", "2026-09-16T07:00:00+08:00")
         self.assertEqual((code, r["next_run"]), (0, "2026-09-16 07:00"))

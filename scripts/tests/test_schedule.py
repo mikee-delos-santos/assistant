@@ -50,6 +50,28 @@ class Validate(unittest.TestCase):
     def test_late_limit_range(self):
         with self.assertRaises(S.ReminderError): S.validate(base(late_limit_minutes=5000), ALLOW)
 
+    # --- Fix round 3 (C2: `once` must be portable across Python 3.9/3.11) ---
+
+    def test_offset_without_colon_rejected(self):
+        with self.assertRaises(S.ReminderError):
+            S.validate(base(schedule={"type": "once", "at": "2026-09-16T08:00:00+0800"}), ALLOW)
+
+    def test_fractional_seconds_rejected(self):
+        with self.assertRaises(S.ReminderError):
+            S.validate(base(schedule={"type": "once", "at": "2026-09-16T08:00:00.500Z"}), ALLOW)
+
+    def test_once_at_normalized_to_utc_z_form(self):
+        r = S.validate(base(schedule={"type": "once", "at": "2026-09-16T08:00:00+08:00"}), ALLOW)
+        self.assertEqual(r["schedule"]["at"], "2026-09-16T00:00:00Z")
+
+    def test_once_at_already_z_stays_z(self):
+        r = S.validate(base(schedule={"type": "once", "at": "2026-09-16T00:00:00Z"}), ALLOW)
+        self.assertEqual(r["schedule"]["at"], "2026-09-16T00:00:00Z")
+
+    def test_once_at_no_seconds_accepted_and_normalized(self):
+        r = S.validate(base(schedule={"type": "once", "at": "2026-09-16T08:00+08:00"}), ALLOW)
+        self.assertEqual(r["schedule"]["at"], "2026-09-16T00:00:00Z")
+
 class Slots(unittest.TestCase):
     def test_weekly_due(self):
         r = S.validate(base(), ALLOW)

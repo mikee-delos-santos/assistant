@@ -22,6 +22,19 @@ ID_RE = re.compile(r"^r-[0-9A-Za-z-]{1,60}$")
 
 UTC = timezone.utc
 
+# datetime.fromisoformat() accepts a different set of strings on 3.9 than
+# on 3.11+ (3.11 added fractional seconds and bare "+HHMM" offsets that 3.9
+# rejects). A reminder file is written by reminder.py on 3.11 and read by
+# the Mac clock on 3.9, so the two must agree on exactly one shape or a
+# file that validates when written could fail to parse when read. This
+# regex is checked first and is stricter than either version alone: a
+# 2-digit hour and minute, optional seconds, and either "Z" or a colon
+# offset "+HH:MM"/"-HH:MM" - no fractional seconds, no offset without a
+# colon.
+_ISO_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})$"
+)
+
 # How far back a recurring schedule looks for a due slot. One week plus a
 # little slack, so a weekly reminder is always found even if a tick is
 # missed for a few days.
@@ -51,6 +64,8 @@ def parse_iso(value: str) -> datetime:
     """
     if not isinstance(value, str) or not value:
         raise ReminderError("expected an ISO 8601 datetime string")
+    if not _ISO_RE.match(value):
+        raise ReminderError("bad ISO 8601 datetime: %r" % (value,))
     text = value
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
@@ -119,9 +134,10 @@ def _validate_schedule(schedule) -> Dict:
         at = schedule.get("at")
         _require(isinstance(at, str) and at, "schedule.at is required for a once reminder")
         # parse_iso already rejects a naive datetime; "with offset" means
-        # exactly that, no bare local time.
-        parse_iso(at)
-        return {"type": "once", "at": at}
+        # exactly that, no bare local time. Store the UTC "Z" form so every
+        # file on disk holds exactly one shape, regardless of which offset
+        # it was written with.
+        return {"type": "once", "at": to_iso_utc(parse_iso(at))}
 
     time_str = schedule.get("time")
     _require(isinstance(time_str, str), "schedule.time is required")
