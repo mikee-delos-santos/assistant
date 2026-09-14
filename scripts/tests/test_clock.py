@@ -1,5 +1,6 @@
 import json, os, tempfile, unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 from brain_control import clock
 
 UTC = timezone.utc
@@ -39,15 +40,16 @@ class Clock(unittest.TestCase):
         self.assertEqual(self.text.calls, []); self.assertEqual(len(self.mark.calls), 1)
         self.assertIn("Trash", self.mark.calls[0][0])
     def test_retry_after_failure(self):
+        # Retries wait out the backoff (1 minute after the first failure).
         write(self.d); self.text.ok = False; self.tick(self.SLOT + timedelta(seconds=20))
-        self.text.ok = True; self.tick(self.SLOT + timedelta(seconds=50))
+        self.text.ok = True; self.tick(self.SLOT + timedelta(seconds=20, minutes=1))
         self.assertEqual(len(self.text.calls), 2)
         self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
     def test_partial_not_resent(self):
         write(self.d, to=["+639170000001", "+639170000002"])
         self.text.ok = lambda a: a[0] == "+639170000001"
         self.tick(self.SLOT + timedelta(seconds=20))
-        self.text.ok = True; self.tick(self.SLOT + timedelta(seconds=50))
+        self.text.ok = True; self.tick(self.SLOT + timedelta(seconds=20, minutes=1))
         self.assertEqual([c[0] for c in self.text.calls], ["+639170000001", "+639170000002", "+639170000002"])
     def test_weekly_kept(self):
         write(self.d, schedule={"type": "weekly", "days": ["wed"], "time": "08:00"})
@@ -75,3 +77,83 @@ class Clock(unittest.TestCase):
         self.assertEqual(len(self.text.calls), clock.MAX_PER_TICK)
         self.tick(self.SLOT + timedelta(seconds=50))
         self.assertEqual(len(self.text.calls), clock.MAX_PER_TICK + 3)
+
+    # --- Fix round 1 ---
+
+    def test_dedupe_recipients(self):
+        # validate() normalizes both spellings to the same handle but does
+        # not reject the duplicate; the clock must still send once.
+        write(self.d, to=["+639170000001", "+63 917 000 0001"])
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len(self.text.calls), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
+        self.assertIn("r-a", self.st["last_done"])
+        # No stuck partial, so a much later tick reports nothing skipped.
+        self.tick(self.SLOT + timedelta(hours=3))
+        self.assertEqual(len(self.mark.calls), 0)
+
+    def test_delete_failure_not_resent(self):
+        write(self.d)
+        with mock.patch("brain_control.clock.os.remove", side_effect=PermissionError):
+            self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len(self.text.calls), 1)
+        self.assertIn("r-a", self.st["last_done"])
+        self.assertEqual([l for l in self.logs if l[0] == "delete_failed"], [("delete_failed", "r-a")])
+        # File still exists (delete failed) but must not be resent.
+        self.assertTrue(os.path.exists(os.path.join(self.d, "r-a.json")))
+        self.tick(self.SLOT + timedelta(seconds=50))
+        self.assertEqual(len(self.text.calls), 1)
+
+    def test_sender_raises_other_reminder_still_processed(self):
+        write(self.d, id="r-raise", to=["+639170000001"])
+        write(self.d, id="r-ok", to=["+639170000002"])
+
+        def flaky(a):
+            if a[0] == "+639170000001":
+                raise RuntimeError("boom")
+            return True
+        self.text.ok = flaky
+
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len(self.text.calls), 2)
+        self.assertIn("r-ok", self.st["last_done"])
+        self.assertNotIn("r-raise", self.st["last_done"])
+        self.assertEqual(self.st["attempts"]["r-raise"]["per"]["+639170000001"]["n"], 1)
+
+    def test_backoff_spacing_then_exhausts(self):
+        write(self.d); self.text.ok = False
+        t0 = self.SLOT + timedelta(seconds=20)
+        self.tick(t0)
+        self.assertEqual(len(self.text.calls), 1)
+
+        too_soon = t0 + timedelta(seconds=30)
+        self.tick(too_soon)
+        self.assertEqual(len(self.text.calls), 1)
+
+        t1 = t0 + timedelta(minutes=1)
+        self.tick(t1)
+        self.assertEqual(len(self.text.calls), 2)
+
+        t2 = t1 + timedelta(minutes=2)
+        self.tick(t2)
+        self.assertEqual(len(self.text.calls), 3)
+
+        t3 = t2 + timedelta(minutes=4)
+        self.tick(t3)
+        self.assertEqual(len(self.text.calls), 4)
+
+        t4 = t3 + timedelta(minutes=8)
+        self.tick(t4)
+        self.assertEqual(len(self.text.calls), 5)
+
+        t5 = t4 + timedelta(minutes=15)
+        self.tick(t5)
+        self.assertEqual(len(self.text.calls), 6)
+
+        self.assertEqual(len(self.mark.calls), 1)
+        self.assertIn("Failed reminders", self.mark.calls[0][0])
+        self.assertIn("Trash", self.mark.calls[0][0])
+        self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
+        self.assertIn("r-a", self.st["last_done"])
+        self.assertNotIn("r-a", self.st["attempts"])
+        self.assertEqual(self.st["sent_today"]["count"], 6)
