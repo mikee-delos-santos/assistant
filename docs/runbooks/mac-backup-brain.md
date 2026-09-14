@@ -87,6 +87,10 @@ The PC is the active brain. Starting the Mac container now = two brains writing 
 same memory = split-brain. Leave the Mac container stopped until an actual failover.
 
 ## 9. Failover - promote the Mac to brain (only when the PC is down)  [CLI]
+Tested for real on 2026-09-15. The exact commands, keys, and config used are in
+ROADMAP.md "Handoff: Mac brain failover drill". The Mac is already set up now, so a
+normal failover is only: PC off, then `docker compose up -d` on the Mac.
+
 1. Confirm the PC gateway is actually stopped (avoid two brains).
 2. `cd ~/workspace/assistant && docker compose up -d`
    (Expected: the SQLite index rebuilds from the synced Markdown on first start.

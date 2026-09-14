@@ -20,7 +20,8 @@ Status legend: DONE | WIP (in progress) | TODO | DEFERRED
   Syncthing are installed. Messages is signed in, Full Disk Access and Remote Login
   are on. The Mac .env has the same secrets as the PC (sent over Taildrop, never
   pasted in chat). Syncthing mirrors the memory folder PC <-> Mac over the tailnet.
-  The Mac container stays STOPPED (PC is the active brain).
+  The Mac container stays STOPPED while the PC is the active brain. Failover to the Mac
+  brain was tested for real on 2026-09-15: see "Handoff: Mac brain failover drill".
 - iMessage family channel is LIVE (2026-09-13 18:32): Mark texted the assistant number
   from his iPhone and the PC brain replied through the Mac. See "Go-live result" below.
 - iMessage identity is now OPTION B (2026-09-13): Messages on the Mac is signed in to
@@ -62,7 +63,7 @@ PC Claude cleanups
 Later
 | # | Who | Task | Notes |
 |---|---|---|---|
-| L1 | Mac + PC | Failover drill (Mac brain) | The gate only accepts the PC key (`from=100.123.4.5`). A Mac brain needs its own key, wrapper, and authorized_keys line for the Docker source address first. Then: stop PC brain, start Mac brain, check memory + iMessage, fail back |
+| L1 | Mac + PC | Failover drill (Mac brain) | Failover half DONE 2026-09-15 (iMessage reply from the Mac brain). Fail back is in progress: see "Handoff: Mac brain failover drill" |
 | L2 | Mac + PC | Syncthing: verify live updates both ways and restart after a reboot | Only the first sync (25/25 files) is verified |
 | L3 | Mac + PC | Exclude `.git` from the synced workspace (`.stignore` on BOTH hosts) | A failover mid-sync could break OpenClaw's git index |
 | L4 | Mark | Encrypted backup of the workspace; FileVault on the Mac | Memory will hold family data |
@@ -74,6 +75,86 @@ Done today (for context): Mac onboarded; Syncthing linked; PC runs imsg over SSH
 through the Mac gate; Option B identity live; gate hides Mark's old history; SMS
 forwarding to the Mac is effectively off (the iPhone no longer lists the Mac, and no
 SMS rows arrived since the switch); end-to-end reply confirmed from the assistant number.
+
+## Handoff: Mac brain failover drill (2026-09-15)
+
+Mark turned the PC off on purpose. Mac Claude built the Mac brain and made it the active
+brain. PC Claude: `git pull` first, then do the "Fail back" rows below.
+
+Result: failover WORKS. Mark texted Brice and got a reply from the Mac brain
+(gate.log `direct-send ok` 05:12:02). Brice read the synced memory (persona, USER.md,
+recent notes). A one-shot `openclaw agent` reply took about 30s including CLI start.
+
+What Mac Claude built on the Mac:
+- Image `assistant/openclaw:with-ssh` built natively (the base digest has linux/arm64).
+- Named volumes `openclaw_imsg_ssh` (key `mac-brain-imsg`) and `openclaw_launch_ssh`
+  (key `mac-brain-launch`). Private keys were made inside the volumes (600, uid 1000).
+  known_hosts entry is `host.docker.internal` with the Mac host key SHA256:EYJ... (checked).
+- `authorized_keys` on the Mac (added by Mark): `from="127.0.0.1,::1",restrict,command=<gate>`.
+  Docker Desktop on macOS proxies container traffic to the host, so sshd sees 127.0.0.1.
+  Verified: `imsg-over-ssh status` from the container = exit 0.
+- `openclaw onboard --non-interactive` (mode local, bind lan, token and API key as env
+  refs, `--skip-bootstrap` so the synced workspace was not touched). Then set:
+  model primary `anthropic/claude-sonnet-4-6`, `mcp.servers.chore-app`,
+  `channels.imessage` enabled + `dmPolicy=allowlist` + allowFrom (3 handles, same count as
+  the PC) + `cliPath=/usr/local/bin/imsg-over-ssh`. Channel status: running.
+- Mac `.env` gained `IMSG_SSH_*`, `LAUNCH_SSH_*` (target `mikee@host.docker.internal`),
+  and `BRAIN_HOST=mac`.
+
+Found during the drill:
+- Brice said "I'm on the PC (WSL)". The synced files said "this machine (WSL/PC)", and the
+  container cannot tell the hosts apart. Fix: `BRAIN_HOST` (per-host `.env`, unset = pc) and
+  `claude-launch where`. TOOLS.md has a "Where you run" section that tells Brice to check it.
+  USER.md and CLAUDE-SESSIONS.md now name the PC and the Mac instead of "this machine".
+  USER.md also said Mindr is on the PC; it is on the Mac.
+- `claude-launch infopathy` on the Mac brain used to drop a trigger no one reads and report
+  success. The wrapper now refuses it when `BRAIN_HOST=mac`. Missing launch key = clear
+  JSON error instead of a shell error.
+- NOT synced, by design, so a failover does not carry them: `openclaw.json`, `.env`,
+  SSH keys, cron jobs (reminders set on the PC do NOT fire from the Mac), chat sessions,
+  the SQLite index.
+- Mac `.env` has an EMPTY `CHORES_MCP_TOKEN` (the PC got the token after the Mac `.env`
+  was copied). Chores tools do not work on the Mac brain until it is sent over Taildrop.
+- `send-rich` denied once at channel start, same as the PC (OpenClaw falls back to `send`).
+
+Fail back (order matters: never two brains at once)
+| # | Who | Step | Status |
+|---|---|---|---|
+| F1 | Mark (Mac) | Add the `mac-brain-launch` authorized_keys line; Mac Claude tests `claude-launch list` from the Mac brain | TODO |
+| F2 | Mac | `docker compose stop openclaw` on the Mac; confirm it is stopped | TODO |
+| F3 | Mark | Turn the PC on AND log in (Syncthing on the PC starts at login, not at boot) | TODO |
+| F4 | PC | Before or right after boot: the PC brain auto-starts with `restart: unless-stopped`. Check the Mac brain is stopped (F2) | TODO |
+| F5 | PC | `git pull`; add `BRAIN_HOST=pc` to the PC `.env`; `docker compose up -d --build --force-recreate openclaw` (new wrapper in the image) | TODO |
+| F6 | PC | Check Syncthing is in sync and there are no `*sync-conflict*` files in the workspace. The Mac changed USER.md, TOOLS.md, CLAUDE-SESSIONS.md, and the launch skill | TODO |
+| F7 | PC | `docker exec openclaw claude-launch where` = `pc` | TODO |
+| F8 | Mark | Text Brice "where are you running?"; expect PC | TODO |
+| F9 | PC | Taildrop `CHORES_MCP_TOKEN` to the Mac (an env line in a file, delete the copy after) | TODO |
+
+Open decision for Mark: automatic failover (see "Proposal: automatic failover" below).
+
+## Proposal: automatic failover (2026-09-15, not decided)
+
+Today failover is manual. The main risk of automation is split brain: both brains watch
+the same iMessage account, so both reply to every text and both write memory.
+
+Recommended shape (all on the Mac, because the Mac is always on and the gate on the Mac is
+the one path both brains use):
+1. A launchd job on the Mac runs every minute. It checks the PC brain health over the tailnet.
+2. PC healthy -> stop the Mac brain (if running). The PC always wins.
+3. PC unhealthy for 5 checks in a row -> start the Mac brain.
+4. Fencing in the gate: the gate learns which brain is calling (a `--brain pc|mac` argument
+   in each key's forced command) and only lets the "active" brain `watch` and `send`. The
+   launchd job writes the active brain to a lease file. This stops double replies during the
+   minute of overlap when the PC boots while the Mac brain still runs.
+
+Known gaps:
+- The PC brain starts at boot, but PC Syncthing starts at login. The PC brain can run on stale
+  memory until someone logs in. Fix options: start Syncthing at boot on the PC, or have a PC
+  task start the brain only after Syncthing reports in sync.
+- Cron reminders live only on the host where they were made. They need a design (for example,
+  keep reminders as Markdown in the workspace and let the active brain schedule them).
+- Wake-on-LAN (row "Wake-on-LAN (Mac wakes PC)") is still deferred. It would let the Mac wake
+  the PC instead of failing over.
 
 ## Handoff: Brice-launched remote Claude Code sessions (2026-09-13)
 
@@ -309,7 +390,7 @@ Runbook: docs/runbooks/mac-backup-brain.md (full from-scratch Mac onboarding).
 |---|---|---|
 | Syncthing mirror of the Markdown memory | WIP | first sync verified 25/25 files (2026-09-13); folder `openclaw-workspace` = data/openclaw/workspace; tailnet addresses only, relays + global discovery off. NOT verified yet: live updates, and restart after reboot. PC firewall TCP 22000 rule in place. PC starts Syncthing at user LOGIN (Startup-folder VBS), not at boot; Mac via `brew services` |
 | Exclude SQLite index, rebuild on failover | WIP | the index is outside the shared workspace folder, so it does not sync; .stignore copied on both hosts as extra safety; rebuild not tested until the drill |
-| Failover runbook + real drill | WIP | runbook written; drill pending |
+| Failover runbook + real drill | WIP | failover to the Mac tested 2026-09-15 (iMessage reply from the Mac brain); fail back pending (rows F1-F9) |
 | Encrypted backup of the workspace | TODO | |
 | Wake-on-LAN (Mac wakes PC) | DEFERRED | punted 2026-09-13; scripts/wake-pc.sh still needs the PC's Ethernet MAC address |
 
