@@ -118,6 +118,16 @@ class Tick(unittest.TestCase):
             saved = json.load(f)
         self.assertEqual(saved["clock"]["last_done"]["r-x"], "2026-09-15T00:00:00Z")
 
+    def test_non_object_state_json_treated_as_corrupt(self):
+        with open(self.cfg["state_path"], "w") as f:
+            f.write("[1, 2, 3]")  # valid JSON, but a state file must be an object
+        main.tick(self.cfg, io=self.io)  # must not raise
+        self.assertTrue(any(n.startswith("state.json.bad-") for n in os.listdir(self.d)))
+        with open(self.cfg["state_path"]) as f:
+            saved = json.load(f)
+        self.assertIn("failover", saved)
+        self.assertIn("clock", saved)
+
     # --- Fix round 3 (M6: _read_env strips one pair of matching quotes) ---
 
     def test_read_env_strips_matching_quotes(self):
