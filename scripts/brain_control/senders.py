@@ -153,14 +153,20 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=90):
     unknown:
 
     - "ok": a matching response carrying a result and no error.
-    - "retry": the gate's own error says retry_safe is true, or ssh
-      exited/hit EOF before any byte of output arrived at all (the
-      request may never have reached the gate, so re-sending is safe).
+    - "retry": the gate's own error says retry_safe is true; ssh exited
+      (EOF on its stdout) before a single byte of output ever arrived
+      (the request may never have reached the gate); or writing/flushing
+      the request itself failed (BrokenPipeError/OSError - ssh was
+      already gone before it could even accept the request). In all of
+      these, the gate never started handling the request.
     - "final": everything else - an error with retry_safe false or
-      absent, a gate rejection (e.g. not the active brain), or a
-      timeout/EOF that happens only after some output was already seen.
-      Once output has started, the send may already be in flight on the
-      far side, so retrying could double-send.
+      absent, a gate rejection (e.g. not the active brain), or the
+      select() deadline expiring with no response at all. The gate
+      writes nothing until its own send finishes, so silence up to the
+      deadline does not mean the connection failed; it can mean the
+      send is still in flight, and once that's possible, retrying could
+      double-send. Only a clean EOF with zero bytes ever read is "retry"
+      - a timeout, or an EOF after some output was already seen, is not.
 
     Waiting for that response never blocks past `timeout`: a stalled ssh
     connection or a gate that never answers must not hang the tick, since
@@ -196,51 +202,56 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=90):
             cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-        proc.stdin.write(request.encode("utf-8"))
-        proc.stdin.flush()
-
-        fd = proc.stdout.fileno()
-        buf = b""
-        deadline = time.monotonic() + timeout
-        matched = False
-        while True:
-            newline_at = buf.find(b"\n")
-            if newline_at == -1:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break  # timed out waiting for the next byte
-                ready, _, _ = select.select([fd], [], [], remaining)
-                if not ready:
-                    break  # timed out waiting for the next byte
-                chunk = os.read(fd, 4096)
-                if not chunk:
-                    break  # gate closed the connection without answering
-                any_output = True
-                buf += chunk
-                continue
-            line, buf = buf[:newline_at], buf[newline_at + 1:]
-            try:
-                msg = json.loads(line.decode("utf-8"))
-            except ValueError:
-                continue
-            if msg.get("id") == 1:
-                matched = True
-                if "result" in msg and "error" not in msg:
-                    outcome = "ok"
-                else:
-                    outcome = "final"
-                    error = msg.get("error")
-                    if isinstance(error, dict):
-                        data = error.get("data")
-                        if isinstance(data, dict) and data.get("retry_safe") is True:
-                            outcome = "retry"
-                break
-        if not matched:
-            # Broke out on a timeout or EOF, never on a matching response:
-            # if not a single byte ever came back, the connection itself
-            # failed (safe to retry); once output has started, a send may
-            # already be in flight, so treat that as unretryable.
-            outcome = "retry" if not any_output else "final"
+        try:
+            proc.stdin.write(request.encode("utf-8"))
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            # ssh was already gone before it could even accept the
+            # request: the gate never saw it, so retrying is safe.
+            outcome = "retry"
+        else:
+            fd = proc.stdout.fileno()
+            buf = b""
+            deadline = time.monotonic() + timeout
+            matched = False
+            eof_with_no_output = False
+            while True:
+                newline_at = buf.find(b"\n")
+                if newline_at == -1:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break  # deadline expired: "final" (see docstring)
+                    ready, _, _ = select.select([fd], [], [], remaining)
+                    if not ready:
+                        break  # deadline expired: "final" (see docstring)
+                    chunk = os.read(fd, 4096)
+                    if not chunk:
+                        # ssh's stdout hit EOF: "retry" only if this is
+                        # the very first thing we ever read from it.
+                        eof_with_no_output = not any_output
+                        break
+                    any_output = True
+                    buf += chunk
+                    continue
+                line, buf = buf[:newline_at], buf[newline_at + 1:]
+                try:
+                    msg = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    continue
+                if msg.get("id") == 1:
+                    matched = True
+                    if "result" in msg and "error" not in msg:
+                        outcome = "ok"
+                    else:
+                        outcome = "final"
+                        error = msg.get("error")
+                        if isinstance(error, dict):
+                            data = error.get("data")
+                            if isinstance(data, dict) and data.get("retry_safe") is True:
+                                outcome = "retry"
+                    break
+            if not matched:
+                outcome = "retry" if eof_with_no_output else "final"
     except Exception:
         outcome = "final"
     finally:

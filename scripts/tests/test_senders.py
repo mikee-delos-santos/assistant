@@ -31,16 +31,38 @@ class GateSend(unittest.TestCase):
         os.environ["PATH"] = self.old_path
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
-    def test_hung_gate_returns_retry_within_timeout(self):
+    def test_hung_gate_returns_final_within_timeout(self):
         # exec replaces the shell with sleep, so killing the ssh process
         # actually stops the child instead of leaving it running past the
         # test (a plain background `sleep 30 &` would outlive the kill).
+        # The gate writes nothing until its own send finishes, so silence
+        # up to the deadline does not mean the connection failed - it
+        # could mean the send is still in flight - so this is "final",
+        # not "retry".
         _fake_ssh(self.tmp_dir, "exec sleep 30\n")
         start = time.time()
         outcome = senders.gate_send("key", "kh", "t", "+1", "hi", timeout=2)
         elapsed = time.time() - start
-        self.assertEqual(outcome, "retry")
+        self.assertEqual(outcome, "final")
         self.assertLess(elapsed, 5, "gate_send should give up around its own timeout, not hang")
+
+    def test_ssh_exit_with_no_output_at_all_is_retry(self):
+        # Distinct from the timeout case above: here ssh itself exits
+        # (EOF on its stdout) before a single byte came back, so the
+        # request may never have reached the gate at all.
+        _fake_ssh(self.tmp_dir, "exit 1\n")
+        self.assertEqual(senders.gate_send("key", "kh", "t", "+1", "hi", timeout=5), "retry")
+
+    def test_write_failure_before_gate_accepts_request_is_retry(self):
+        # ssh was already gone before it could even accept the request on
+        # stdin (BrokenPipeError/OSError writing or flushing): the gate
+        # never saw it, so retrying is safe.
+        fake_proc = mock.Mock()
+        fake_proc.stdin.write.side_effect = BrokenPipeError()
+        fake_proc.poll.return_value = 0
+        with mock.patch("brain_control.senders.subprocess.Popen", return_value=fake_proc):
+            outcome = senders.gate_send("key", "kh", "t", "+1", "hi", timeout=5)
+        self.assertEqual(outcome, "retry")
 
     def test_matching_result_is_ok(self):
         _fake_ssh(self.tmp_dir, 'read -r line\necho \'{"jsonrpc":"2.0","id":1,"result":{}}\'\n')

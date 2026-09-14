@@ -210,13 +210,19 @@ For each valid file:
 
      The send call returns one of three outcomes, never a plain success/failure guess
      (ruling R10): `"ok"` (a matching response with a result and no error), `"retry"`
-     (the gate's error says `retry_safe: true`, or the ssh connection failed before any
-     byte came back at all), or `"final"` (every other failure - a plain error, a gate
-     rejection, or a timeout/EOF once some output had already started, since the send may
-     already be in flight by then). `"retry"` gets the usual per-recipient backoff and
-     6-attempt cap. `"final"` stops retrying that recipient right away: it counts as done
-     for completion purposes and the reminder's name goes on the Failed list this tick.
-     An outcome that is genuinely unknown is never treated as either success or a safe
+     (the gate's error says `retry_safe: true`; ssh's stdout hit a clean EOF before a
+     single byte ever came back; or writing/flushing the request itself failed, meaning
+     ssh was already gone before it could even accept the request - in all of these the
+     gate never started handling it), or `"final"` (every other failure - a plain error,
+     a gate rejection, or the wait simply timing out with no response at all. The gate
+     writes nothing until its own send finishes, so silence up to the deadline does not
+     prove the connection failed; it can mean the send is still in flight, and once
+     that's possible, retrying could double-send. Only a clean EOF with zero bytes ever
+     read counts as "retry" - a timeout, or an EOF after some output was already seen,
+     does not). `"retry"` gets the usual per-recipient backoff and 6-attempt cap.
+     `"final"` stops retrying that recipient right away: it counts as done for
+     completion purposes and the reminder's name goes on the Failed list this tick. An
+     outcome that is genuinely unknown is never treated as either success or a safe
      retry.
    - `smart`: `POST <lease holder>/hooks/agent` with `message` = the prompt plus a short
      header (job name, scheduled time, "send the result to <handle> on iMessage"),
