@@ -22,6 +22,16 @@ argv mode cannot be filtered or guarded, so it allows only `status`.
 
 The gate never starts a shell. Denials are logged with the method or subcommand
 name only, never message text, so the allowlist can be tuned from the log.
+
+Fencing: the forced command may carry `--brain pc` or `--brain mac`, telling the gate
+which brain this connection is for. A lease file (~/.imsg-bridge/active-brain) names the
+brain that currently holds iMessage. The gate reads the lease on every check, never
+caches it, and applies it two ways: a brain that is not the lease holder gets no incoming
+message notifications (its connection stays open, but message events are dropped) and
+its "send" calls are rejected. A third role, "clock", may only call "send"; it never
+receives notifications and every other method is rejected for it. A connection started
+without --brain (the role is None) is unfenced, for compatibility with any caller that
+predates this feature.
 """
 import calendar
 import json
@@ -33,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import List, Optional
 
 IMSG = "/opt/homebrew/bin/imsg"
 LOG = os.path.expanduser("~/.imsg-bridge/gate.log")
@@ -45,6 +56,13 @@ SQL_CHUNK = 500
 # visible_since_utc must fall in this window. A typo that moves it earlier would expose
 # old rows whose destination happens to be an assistant handle.
 CUTOFF_FLOOR_UTC = "2026-09-13T00:00:00Z"
+
+LEASE = os.path.expanduser("~/.imsg-bridge/active-brain")
+BRAINS = ("pc", "mac")
+ROLES = ("pc", "mac", "clock")
+# clock may only send; every other RPC method is rejected for it.
+CLOCK_METHODS = {"send"}
+FENCE_LOG_INTERVAL = 60  # seconds between "fence" log lines per process
 
 # chats/history/watch print plain text the visibility filter cannot check.
 ARGV_SUBCOMMANDS = {"status"}
@@ -83,6 +101,61 @@ def deny(reason):
     log("deny", reason)
     sys.stderr.write("imsg-ssh-gate: denied: %s\n" % reason)
     sys.exit(126)
+
+
+def parse_role(argv_tail):
+    # type: (List[str]) -> Optional[str]
+    """Which brain this connection is for, from the gate's own argv (not SSH_ORIGINAL_COMMAND).
+
+    [] -> None (legacy, unfenced). ["--brain", "pc"|"mac"] -> that brain. Anything else is
+    a misconfigured forced command, so it is denied rather than silently unfenced.
+    """
+    if not argv_tail:
+        return None
+    if len(argv_tail) == 2 and argv_tail[0] == "--brain" and argv_tail[1] in BRAINS:
+        return argv_tail[1]
+    deny("bad --brain argument in forced command")
+
+
+def read_lease(path=LEASE):
+    # type: (str) -> str
+    """Which brain currently holds iMessage. Missing file, unreadable, or content that is
+    not exactly "pc" or "mac" all fall back to "pc", so a broken lease never locks both
+    brains out and never grants an unintended one access."""
+    try:
+        with open(path) as fh:
+            value = fh.read().strip()
+    except OSError:
+        return "pc"
+    return value if value in BRAINS else "pc"
+
+
+def may_receive(role, lease_path=LEASE):
+    # type: (Optional[str], str) -> bool
+    """Whether incoming message notifications should reach this connection."""
+    if role is None:
+        return True
+    if role == "clock":
+        return False
+    return role == read_lease(lease_path)
+
+
+def may_send(role, lease_path=LEASE):
+    # type: (Optional[str], str) -> bool
+    """Whether this connection may call "send"."""
+    if role is None:
+        return True
+    if role == "clock":
+        return True
+    return role == read_lease(lease_path)
+
+
+def method_allowed_for_role(role, method):
+    # type: (Optional[str], str) -> bool
+    """Role-based method allowlist, applied on top of the RPC_METHODS check every role gets."""
+    if role == "clock":
+        return method in CLOCK_METHODS
+    return True
 
 
 def risky_option(arg):
@@ -512,7 +585,7 @@ def parse_request(raw):
                       parse_constant=reject_constant)
 
 
-def run_rpc(args):
+def run_rpc(args, role=None):
     if args in (["--help"], ["-h"]):
         # OpenClaw may probe `imsg rpc --help`. It prints usage text only, no data.
         os.execv(IMSG, [IMSG, "rpc", "--help"])
@@ -521,6 +594,7 @@ def run_rpc(args):
     child = subprocess.Popen([IMSG, "rpc"] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     out = sys.stdout.buffer
     out_lock = threading.Lock()
+    last_fence_log = [0.0]  # mutable cell: last time a "fence" line was logged
 
     def finish(code):
         try:
@@ -549,6 +623,13 @@ def run_rpc(args):
             if is_response:
                 message = visibility.filter_response(message)
             else:
+                if not may_receive(role):
+                    now = time.time()
+                    if now - last_fence_log[0] >= FENCE_LOG_INTERVAL:
+                        last_fence_log[0] = now
+                        log("fence", "dropped notification %s for %s" % (
+                            short(message.get("method")), role))
+                    return None
                 message = visibility.filter_notification(message)
                 if message is None:
                     return None
@@ -610,9 +691,15 @@ def run_rpc(args):
             if not isinstance(method, str) or method not in RPC_METHODS:
                 reject(request_id, "method %s is not allowed" % short(method))
                 continue
+            if not method_allowed_for_role(role, method):
+                reject(request_id, "method %s is not allowed for %s" % (short(method), role))
+                continue
             bad_key = risky_key(request)
             if bad_key:
                 reject(request_id, "file or path parameter %s in %s" % (short(bad_key), short(method)))
+                continue
+            if method == "send" and not may_send(role):
+                reject(request_id, "not the active brain (%s)" % role)
                 continue
             params = request.get("params")
             if method == "send" and isinstance(params, dict):
@@ -738,8 +825,9 @@ def main():
         deny("only imsg may run")
     if len(argv) < 2:
         deny("imsg needs a subcommand")
+    role = parse_role(sys.argv[1:])
     if argv[1] == "rpc":
-        run_rpc(argv[2:])
+        run_rpc(argv[2:], role)
     run_argv(argv[1:])
 
 
