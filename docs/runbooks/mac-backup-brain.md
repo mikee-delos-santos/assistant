@@ -87,6 +87,13 @@ The PC is the active brain. Starting the Mac container now = two brains writing 
 same memory = split-brain. Leave the Mac container stopped until an actual failover.
 
 ## 9. Failover - promote the Mac to brain (only when the PC is down)  [CLI]
+Tested for real on 2026-09-15. What was built on the Mac (image, key volumes, gate lines,
+OpenClaw config) is described in ROADMAP.md "Handoff: Mac brain failover drill". That
+section also lists what was still open (Chores token, launch key line). Once those rows
+are done, a failover is: confirm the PC brain is stopped, then `docker compose up -d` on
+the Mac. Step 3 below (wrapper, key, cliPath) is the from-scratch version and is already done
+on this Mac.
+
 1. Confirm the PC gateway is actually stopped (avoid two brains).
 2. `cd ~/workspace/assistant && docker compose up -d`
    (Expected: the SQLite index rebuilds from the synced Markdown on first start.
@@ -104,8 +111,10 @@ same memory = split-brain. Leave the Mac container stopped until an actual failo
    send risk as the PC (see ROADMAP.md).
 4. Reach it over Tailscale (Control UI / `tailscale serve`) or
    `docker exec -it openclaw openclaw chat`.
-5. When the PC returns: `docker compose stop openclaw` on the Mac, let Syncthing
-   reconcile, then start the PC brain again.
+5. When the PC returns, follow the fail back rows F1-F10 in ROADMAP.md "Handoff: Mac brain
+   failover drill". Short version: stop the Mac brain BEFORE the PC turns on. The PC brain
+   starts by itself with Docker Desktop, so stop it right after login, wait until Syncthing
+   is up to date, then start it again.
 
 ## 10. Prefer waking the PC over failing over (AS-33)  [CLI]  (DEFERRED 2026-09-13, not set up)
 For short PC outages, wake it instead of promoting the Mac: `scripts/wake-pc.sh`
