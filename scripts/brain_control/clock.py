@@ -112,7 +112,8 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
         log: Callable[[str, str], None],
         checkpoint: Optional[Callable[[], None]] = None,
         time_budget_s: float = 90.0,
-        monotonic: Callable[[], float] = time.monotonic) -> None:
+        monotonic: Callable[[], float] = time.monotonic,
+        extra_skipped: Optional[list] = None) -> None:
     if not os.path.isdir(reminders_dir):
         return
 
@@ -137,6 +138,12 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
     def record_attempt():
         counters["tick"] += 1
         sent_today["count"] += 1
+
+    def do_checkpoint():
+        # Called only after an attempt's outcome is already applied to
+        # st (partial/per_handle/last_done/attempts, and any file
+        # deletion), never before: the point is to persist exactly the
+        # state a retry should resume from, not a half-recorded attempt.
         if checkpoint is not None:
             checkpoint()
 
@@ -145,7 +152,7 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
     def budget_used_up():
         return monotonic() - start_mono >= time_budget_s
 
-    skipped_names = []
+    skipped_names = list(extra_skipped) if extra_skipped else []
     failed_names = []
     invalid_names = []
 
@@ -197,7 +204,7 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
             _process_reminder(
                 rem, rem_id, path, now, last_done, partial, attempts,
                 limit_reached, record_attempt, send_text, send_smart, lease,
-                skipped_names, failed_names, log,
+                skipped_names, failed_names, log, do_checkpoint, budget_used_up,
             )
         except Exception as e:
             # A bug here (ours, not the sender's - those are caught inside
@@ -222,7 +229,8 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
 
 def _process_reminder(rem, rem_id, path, now, last_done, partial, attempts,
                        limit_reached, record_attempt, send_text, send_smart,
-                       lease, skipped_names, failed_names, log):
+                       lease, skipped_names, failed_names, log,
+                       do_checkpoint, budget_used_up):
     last_done_dt = schedule.parse_iso(last_done[rem_id]) if rem_id in last_done else None
     slot = schedule.due_slot(rem, now, last_done_dt)
     if slot is None:
@@ -253,11 +261,11 @@ def _process_reminder(rem, rem_id, path, now, last_done, partial, attempts,
     if rem["kind"] == "text":
         _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
                    partial, attempts, per_handle, limit_reached, record_attempt,
-                   send_text, failed_names, log)
+                   send_text, failed_names, log, do_checkpoint, budget_used_up)
     else:
         _run_smart(rem, rem_id, path, slot, slot_iso, now, late, is_once,
                     last_done, partial, attempts, per_handle, limit_reached,
-                    record_attempt, send_smart, lease, failed_names, log)
+                    record_attempt, send_smart, lease, failed_names, log, do_checkpoint)
 
 
 def _due_for_retry(att, now):
@@ -269,7 +277,7 @@ def _due_for_retry(att, now):
 
 def _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
               partial, attempts, per_handle, limit_reached, record_attempt,
-              send_text, failed_names, log):
+              send_text, failed_names, log, do_checkpoint, budget_used_up):
     unique_to = _dedupe(rem["to"])
 
     prior = partial.get(rem_id)
@@ -282,6 +290,7 @@ def _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
     text = ("(late) " if late else "") + rem["text"]
     already_failed = False
     stopped_on_limit = False
+    finalized = False
 
     for handle in unique_to:
         if handle in done_set:
@@ -299,7 +308,9 @@ def _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
         if not _due_for_retry(att, now):
             continue
 
-        if limit_reached():
+        if limit_reached() or budget_used_up():
+            # Either way, no new send starts this tick: whatever is left
+            # (this recipient and any after it) is picked up next tick.
             stopped_on_limit = True
             break
 
@@ -340,20 +351,39 @@ def _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
         # process dying) never loses an attempt that already happened.
         partial[rem_id] = {"slot": slot_iso, "done": done}
 
-    if set(unique_to) <= done_set:
-        last_done[rem_id] = slot_iso
-        partial.pop(rem_id, None)
-        attempts.pop(rem_id, None)
-        if is_once:
-            _delete(path, rem_id, log)
-    elif not stopped_on_limit:
-        # Every remaining handle is just waiting out its backoff.
-        partial[rem_id] = {"slot": slot_iso, "done": done}
+        if set(unique_to) <= done_set:
+            # This attempt just finished the whole reminder for this
+            # slot: fold that into the same checkpoint, so a crash right
+            # after does not leave a completed reminder looking partial.
+            # `finalized` means the block below must not redo this.
+            last_done[rem_id] = slot_iso
+            partial.pop(rem_id, None)
+            attempts.pop(rem_id, None)
+            if is_once:
+                _delete(path, rem_id, log)
+            finalized = True
+
+        do_checkpoint()
+
+    if not finalized:
+        # Reached only when the loop never got to run a finalizing
+        # attempt itself - e.g. every handle was already done_set before
+        # the loop even started.
+        if set(unique_to) <= done_set:
+            last_done[rem_id] = slot_iso
+            partial.pop(rem_id, None)
+            attempts.pop(rem_id, None)
+            if is_once:
+                _delete(path, rem_id, log)
+        elif not stopped_on_limit:
+            # Every remaining handle is just waiting out its backoff.
+            partial[rem_id] = {"slot": slot_iso, "done": done}
 
 
 def _run_smart(rem, rem_id, path, slot, slot_iso, now, late, is_once,
                 last_done, partial, attempts, per_handle, limit_reached,
-                record_attempt, send_smart, lease, failed_names, log):
+                record_attempt, send_smart, lease, failed_names, log,
+                do_checkpoint):
     handle = rem["to"][0]
     att = per_handle.get(handle, {"n": 0, "next": None})
 
@@ -385,6 +415,7 @@ def _run_smart(rem, rem_id, path, slot, slot_iso, now, late, is_once,
         attempts.pop(rem_id, None)
         if is_once:
             _delete(path, rem_id, log)
+        do_checkpoint()
         return
 
     if outcome == "final":
@@ -396,6 +427,7 @@ def _run_smart(rem, rem_id, path, slot, slot_iso, now, late, is_once,
         attempts.pop(rem_id, None)
         if is_once:
             _delete(path, rem_id, log)
+        do_checkpoint()
         return
 
     n = att["n"] + 1
@@ -408,6 +440,7 @@ def _run_smart(rem, rem_id, path, slot, slot_iso, now, late, is_once,
             _delete(path, rem_id, log)
     else:
         per_handle[handle] = {"n": n, "next": _next_backoff_iso(now, n)}
+    do_checkpoint()
 
 
 def _sweep_gone(last_done: Dict, partial: Dict, attempts: Dict, gone: Dict,

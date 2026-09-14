@@ -147,14 +147,15 @@ def _gate_is_unfenced(authorized_keys_path):
 
     Such a line accepts connections without a role, so the gate cannot
     tell a pc/mac brain connection from a clock connection and fencing
-    (ruling R13) does not apply. A file that cannot be read is treated
+    (ruling R13) does not apply. A file that cannot be read, or cannot
+    be decoded as text (UnicodeDecodeError is a ValueError), is treated
     the same way: fail safe, never assume the gate is fenced when that
     cannot actually be verified.
     """
     try:
         with open(authorized_keys_path, "r") as f:
             lines = f.read().splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return True
     for line in lines:
         stripped = line.strip()
@@ -175,8 +176,12 @@ def _notice_unfenced_gate(cfg, io, st, mark_handle, now, log_path):
         except Exception:
             due = True
     if due:
-        _send_notice(io, cfg, mark_handle, GATE_NOTICE_TEXT, log_path)
-        gate_state["last_notice_at"] = schedule.to_iso_utc(now)
+        result = _send_notice(io, cfg, mark_handle, GATE_NOTICE_TEXT, log_path)
+        if _outcome_delivered(result):
+            # Only push the 24h window out on an actual delivery: if it
+            # was not delivered (or there was no handle to send to),
+            # the next tick should try again right away, not wait a day.
+            gate_state["last_notice_at"] = schedule.to_iso_utc(now)
 
 
 def _run_failover(cfg, io, st, mode, lease, mark_handle, now, log_path):
@@ -243,7 +248,8 @@ def _run_failover(cfg, io, st, mode, lease, mark_handle, now, log_path):
 
 def _recover_last_done(cfg, st, allow, now, log_path):
     """After a corrupt state file is recovered (moved aside, state reset
-    to {}), seed last_done from the reminder files still on disk.
+    to {}), seed last_done from the reminder files still on disk, for
+    recurring reminders only (ruling R15).
 
     Without this, a recurring reminder whose last-sent slot only lived in
     the lost state would look never-sent and fire again for every slot
@@ -252,15 +258,26 @@ def _recover_last_done(cfg, st, allow, now, log_path):
     clock would itself pick next) makes that slot look already handled,
     so nothing already sent before the corruption is sent again; only
     slots after now are still eligible.
+
+    A `once` reminder is deliberately never seeded here: the file still
+    existing on disk is itself the proof it was never completed (the
+    clock deletes a `once` file on success), so recovery must leave it
+    alone and let the clock send it normally.
+
+    Returns the names of the recurring reminders that were seeded, so
+    the caller can tell Mark about them in the same tick's report -
+    recovery silently swallowing a scheduled send would otherwise be
+    invisible.
     """
     reminders_dir = cfg["reminders_dir"]
+    recovered_names = []
     if not os.path.isdir(reminders_dir):
-        return
+        return recovered_names
     last_done = st["clock"].setdefault("last_done", {})
     try:
         filenames = sorted(f for f in os.listdir(reminders_dir) if f.endswith(".json"))
     except OSError:
-        return
+        return recovered_names
     for filename in filenames:
         file_id = filename[:-len(".json")]
         path = os.path.join(reminders_dir, filename)
@@ -273,12 +290,16 @@ def _recover_last_done(cfg, st, allow, now, log_path):
             # An invalid file is the clock's problem to log and skip, not
             # this recovery step's; just leave it out of the seed.
             continue
+        if rem["schedule"]["type"] == "once":
+            continue
         slot = schedule.due_slot(rem, now, None)
         if slot is not None:
             last_done[rem["id"]] = schedule.to_iso_utc(slot)
+            recovered_names.append(rem["name"])
+    return recovered_names
 
 
-def _run_clock(cfg, io, st, now, lease, allow, mark_handle, log_path):
+def _run_clock(cfg, io, st, now, lease, allow, mark_handle, log_path, extra_skipped=None):
     token = _senders.read_text(cfg["hooks_token_path"], "").strip()
 
     def send_text(handle, text):
@@ -300,10 +321,17 @@ def _run_clock(cfg, io, st, now, lease, allow, mark_handle, log_path):
     def log(event, detail):
         _log(log_path, event, detail)
 
+    def checkpoint():
+        # Persist the whole tick state right after each send attempt's
+        # outcome is applied, not only once at the end of the run: a
+        # crash mid-tick then loses at most the attempt in progress.
+        _save_state(cfg["state_path"], st)
+
     try:
         clock.run(
             cfg["reminders_dir"], st["clock"], now, lease, allow,
             send_text, send_smart, notify_mark, log,
+            checkpoint=checkpoint, extra_skipped=extra_skipped,
         )
     finally:
         _save_state(cfg["state_path"], st)
@@ -351,8 +379,9 @@ def tick(cfg, now=None, io=None):
         if not mark_handle:
             _log(log_path, "config_missing", "mark_handle")
 
+        recovered_names = []
         if recovered:
-            _recover_last_done(cfg, st, allow, now, log_path)
+            recovered_names = _recover_last_done(cfg, st, allow, now, log_path)
 
         mode = _senders.read_text(cfg["mode_path"], "off").strip()
         lease = _clean_lease(_senders.read_text(cfg["lease_path"], "pc"))
@@ -365,7 +394,8 @@ def tick(cfg, now=None, io=None):
         lease = _clean_lease(_senders.read_text(cfg["lease_path"], "pc"))
 
         try:
-            _run_clock(cfg, io, st, now, lease, allow, mark_handle, log_path)
+            _run_clock(cfg, io, st, now, lease, allow, mark_handle, log_path,
+                       extra_skipped=recovered_names)
         except Exception as exc:
             _log(log_path, "error", "clock %s" % type(exc).__name__)
     finally:

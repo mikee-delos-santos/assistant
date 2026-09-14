@@ -189,6 +189,37 @@ class Tick(unittest.TestCase):
         lines = [l for l in self.log_lines() if "unfenced_gate_line" in l]
         self.assertEqual(len(lines), 1)
 
+    def test_undecodable_authorized_keys_treated_as_unfenced(self):
+        # Binary garbage the "r" mode can't decode as text at all -
+        # UnicodeDecodeError, not OSError - must fail safe the same way.
+        with open(self.cfg["authorized_keys_path"], "wb") as f:
+            f.write(b"\xff\xfe\x00\xff not valid utf-8 \x80\x81")
+        self.mode("auto")
+        self.io.healthy = False
+        main.tick(self.cfg, io=self.io)
+        self.assertEqual(self.io.compose, [])
+        lines = [l for l in self.log_lines() if "unfenced_gate_line" in l]
+        self.assertEqual(len(lines), 1)
+
+    def test_unfenced_notice_not_delivered_retries_next_tick_not_in_24h(self):
+        with open(self.cfg["authorized_keys_path"], "w") as f:
+            f.write('command="imsg-ssh-gate" ssh-ed25519 AAAAtest\n')  # no --brain
+
+        class Undelivered(FakeIO):
+            def gate_send(self, key, kh, target, handle, text, timeout=90):
+                self.sent.append((handle, text))
+                return "final"
+
+        self.io = Undelivered()
+        self.mode("auto")
+        t0 = datetime(2026, 9, 15, 0, 0, tzinfo=timezone.utc)
+        main.tick(self.cfg, now=t0, io=self.io)
+        main.tick(self.cfg, now=t0 + timedelta(minutes=1), io=self.io)
+        # Neither attempt was delivered, so last_notice_at was never set:
+        # every tick keeps trying, not waiting out a 24h window that a
+        # real delivery never actually started.
+        self.assertEqual(len(self.io.sent), 2)
+
     def test_fenced_gate_line_does_not_block_failover(self):
         # authorized_keys already has a --brain-fenced line from setUp.
         self.mode("auto")
@@ -207,6 +238,66 @@ class Tick(unittest.TestCase):
         main.tick(self.cfg, io=self.io)
         with open(self.cfg["lease_path"]) as f:
             self.assertEqual(f.read().strip(), "pc")
+
+    # --- Fix round 2 (I3: checkpoint wired into main._run_clock with a
+    # real atomic full-state save) ---
+
+    def test_checkpoint_persists_state_after_first_recipient_before_crash(self):
+        r = {"version": 1, "id": "r-two", "kind": "text", "name": "Two people",
+             "to": ["+639170000001", "+639170000002"], "text": "hi", "prompt": None,
+             "schedule": {"type": "once", "at": "2026-09-16T00:00:20Z"}, "tz": "Asia/Manila",
+             "late_limit_minutes": 120, "created_at": "2026-09-15T00:00:00Z",
+             "created_by": "brice"}
+        with open(os.path.join(self.cfg["reminders_dir"], "r-two.json"), "w") as f:
+            json.dump(r, f)
+        with open(self.cfg["env_path"], "w") as f:
+            f.write("IMESSAGE_ALLOW_FROM=+639170000001,+639170000002\n"
+                     "MARK_IMESSAGE_HANDLE=+639170000001\n")
+
+        class InterruptsOnSecondSend(FakeIO):
+            def gate_send(self, key, kh, target, handle, text, timeout=90):
+                self.sent.append((handle, text))
+                if len(self.sent) >= 2:
+                    raise KeyboardInterrupt()
+                return True
+
+        self.io = InterruptsOnSecondSend()
+        now = datetime(2026, 9, 16, 0, 0, 30, tzinfo=timezone.utc)
+        with self.assertRaises(KeyboardInterrupt):
+            main.tick(self.cfg, now=now, io=self.io)
+        with open(self.cfg["state_path"]) as f:
+            saved = json.load(f)
+        self.assertEqual(saved["clock"]["partial"]["r-two"]["done"], ["+639170000001"])
+
+    def test_checkpoint_writes_state_more_than_once_per_tick(self):
+        # Distinguishes real per-attempt checkpointing from the single
+        # save already done in _run_clock's finally block: two sends in
+        # one tick must mean at least two extra state writes beyond that
+        # one final save.
+        r = {"version": 1, "id": "r-two", "kind": "text", "name": "Two people",
+             "to": ["+639170000001", "+639170000002"], "text": "hi", "prompt": None,
+             "schedule": {"type": "once", "at": "2026-09-16T00:00:20Z"}, "tz": "Asia/Manila",
+             "late_limit_minutes": 120, "created_at": "2026-09-15T00:00:00Z",
+             "created_by": "brice"}
+        with open(os.path.join(self.cfg["reminders_dir"], "r-two.json"), "w") as f:
+            json.dump(r, f)
+        with open(self.cfg["env_path"], "w") as f:
+            f.write("IMESSAGE_ALLOW_FROM=+639170000001,+639170000002\n"
+                     "MARK_IMESSAGE_HANDLE=+639170000001\n")
+        now = datetime(2026, 9, 16, 0, 0, 30, tzinfo=timezone.utc)
+        calls = []
+        real_write_atomic = main._senders.write_atomic
+
+        def spy(path, data, mode=0o600):
+            if path == self.cfg["state_path"]:
+                calls.append(1)
+            return real_write_atomic(path, data, mode)
+
+        with mock.patch("brain_control.main._senders.write_atomic", side_effect=spy):
+            main.tick(self.cfg, now=now, io=self.io)
+        # 2 checkpoints (one per recipient) + the failover save + the
+        # clock step's own finally save.
+        self.assertGreaterEqual(len(calls), 4)
 
     # --- Fix round 3 (notify_mark treats a non-"ok" gate_send result as
     # not delivered: log only, never raise, never resend) ---
@@ -260,10 +351,35 @@ class Tick(unittest.TestCase):
             f.write("{bad")
         now = datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc)  # 09:00 Manila: already due
         main.tick(self.cfg, now=now, io=self.io)
-        self.assertEqual(self.io.sent, [])  # not resent, even though it's newly due
+        # Not resent (the reminder's own text never goes out this tick) -
+        # the only send is the single Skipped-report notice (R15).
+        self.assertEqual(self.io.sent, [("+639170000001", "Skipped late reminders: Water plants")])
         with open(self.cfg["state_path"]) as f:
             saved = json.load(f)
         self.assertIn("r-daily", saved["clock"]["last_done"])
+
+    # --- Fix round 2 (R15: once reminders never seeded; recurring
+    # reminders' names go on the tick's Skipped report) ---
+
+    def test_corrupt_state_recovery_never_seeds_once_reminders(self):
+        r = {"version": 1, "id": "r-once", "kind": "text", "name": "Pay rent",
+             "to": ["+639170000001"], "text": "Pay rent", "prompt": None,
+             "schedule": {"type": "once", "at": "2026-09-15T00:30:00Z"}, "tz": "Asia/Manila",
+             "late_limit_minutes": 1440, "created_at": "2026-09-01T00:00:00Z",
+             "created_by": "brice"}
+        with open(os.path.join(self.cfg["reminders_dir"], "r-once.json"), "w") as f:
+            json.dump(r, f)
+        with open(self.cfg["state_path"], "w") as f:
+            f.write("{bad")
+        now = datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc)  # already due
+        main.tick(self.cfg, now=now, io=self.io)
+        # A once file still on disk is itself the proof it was never
+        # completed: it must still be sent, not silently marked done.
+        self.assertIn(("+639170000001", "(late) Pay rent"), self.io.sent)
+        with open(self.cfg["state_path"]) as f:
+            saved = json.load(f)
+        self.assertIn("r-once", saved["clock"]["last_done"])
+        self.assertFalse(os.path.exists(os.path.join(self.cfg["reminders_dir"], "r-once.json")))
 
 
 if __name__ == "__main__":

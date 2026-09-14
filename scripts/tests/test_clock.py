@@ -4,7 +4,7 @@ from unittest import mock
 from brain_control import clock
 
 UTC = timezone.utc
-ALLOW = {"+639170000001", "+639170000002"}
+ALLOW = {"+639170000001", "+639170000002", "+639170000003"}
 def write(d, **over):
     r = {"version": 1, "id": "r-a", "kind": "text", "name": "Trash", "to": ["+639170000001"],
          "text": "Trash day", "prompt": None, "schedule": {"type": "once", "at": "2026-09-16T08:00:00+08:00"},
@@ -263,6 +263,51 @@ class Clock(unittest.TestCase):
                    checkpoint=lambda: checkpoints.append(1))
         self.assertEqual(len(checkpoints), 2)
 
+    # --- Fix round 2 (I3: checkpoint fires after the attempt's outcome
+    # is already applied to st, not before) ---
+
+    def test_checkpoint_sees_attempt_already_applied_to_state(self):
+        write(self.d, to=["+639170000001", "+639170000002"])
+        seen = []
+
+        def checkpoint():
+            # Snapshot state at the moment checkpoint fires - it must
+            # already include this attempt, not the state as it was
+            # before the send.
+            partial = self.st.get("partial", {}).get("r-a")
+            seen.append({
+                "done": list(partial["done"]) if partial else None,
+                "last_done": "r-a" in self.st.get("last_done", {}),
+            })
+
+        clock.run(self.d, self.st, self.SLOT + timedelta(seconds=20), "pc", ALLOW,
+                   self.text, self.smart, self.mark, lambda e, x: self.logs.append((e, x)),
+                   checkpoint=checkpoint)
+        self.assertEqual(len(seen), 2)
+        # After the first recipient's attempt: recorded in partial, not
+        # yet the whole reminder's completion.
+        self.assertEqual(seen[0], {"done": ["+639170000001"], "last_done": False})
+        # After the second (final) recipient's attempt: the reminder is
+        # fully done, so partial is already cleared and last_done is
+        # already set - not a half-recorded state.
+        self.assertEqual(seen[1], {"done": None, "last_done": True})
+
+    def test_checkpoint_sees_last_done_after_final_recipient(self):
+        write(self.d)  # single recipient
+        seen_last_done = []
+
+        def checkpoint():
+            seen_last_done.append(dict(self.st.get("last_done", {})))
+
+        clock.run(self.d, self.st, self.SLOT + timedelta(seconds=20), "pc", ALLOW,
+                   self.text, self.smart, self.mark, lambda e, x: self.logs.append((e, x)),
+                   checkpoint=checkpoint)
+        self.assertEqual(len(seen_last_done), 1)
+        # The only checkpoint call already sees last_done set and the
+        # once file already deleted, not a half-recorded attempt.
+        self.assertIn("r-a", seen_last_done[0])
+        self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
+
     # --- Fix round 3 (I4: time budget) ---
 
     def test_time_budget_stops_starting_new_sends(self):
@@ -271,10 +316,38 @@ class Clock(unittest.TestCase):
         times = [0.0]
 
         def fake_monotonic():
-            times[0] += 50.0
+            times[0] += 40.0
             return times[0]
 
         clock.run(self.d, self.st, self.SLOT + timedelta(seconds=20), "pc", ALLOW,
                    self.text, self.smart, self.mark, lambda e, x: self.logs.append((e, x)),
                    time_budget_s=90.0, monotonic=fake_monotonic)
         self.assertEqual(len(self.text.calls), 1)
+
+    # --- Fix round 2 (I4: budget also checked per recipient, not only per file) ---
+
+    def test_time_budget_checked_per_recipient_not_only_per_file(self):
+        write(self.d, to=["+639170000001", "+639170000002", "+639170000003"])
+        times = [0.0]
+
+        def fake_monotonic():
+            times[0] += 30.0
+            return times[0]
+
+        now = self.SLOT + timedelta(seconds=20)
+        clock.run(self.d, self.st, now, "pc", ALLOW, self.text, self.smart, self.mark,
+                   lambda e, x: self.logs.append((e, x)), time_budget_s=90.0,
+                   monotonic=fake_monotonic)
+        # Only the first recipient sent this tick; the file is still on
+        # disk (not fully done) and the other two are picked up next tick.
+        self.assertEqual([c[0] for c in self.text.calls], ["+639170000001"])
+        self.assertTrue(os.path.exists(os.path.join(self.d, "r-a.json")))
+
+        # A later tick, with a monotonic that never trips the budget,
+        # finishes the job without resending the first recipient.
+        self.tick(now + timedelta(minutes=1))
+        self.assertEqual(
+            [c[0] for c in self.text.calls],
+            ["+639170000001", "+639170000002", "+639170000003"],
+        )
+        self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
