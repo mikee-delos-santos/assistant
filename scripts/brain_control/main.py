@@ -16,7 +16,7 @@ import copy
 import fcntl
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import clock
 from . import failover
@@ -26,6 +26,11 @@ from . import senders as _senders
 LOG_MAX_BYTES = 1024 * 1024
 LOG_KEEP_LINES = 2000
 CONTAINER_NAME = "openclaw"
+GATE_NOTICE_INTERVAL = timedelta(hours=24)
+GATE_NOTICE_TEXT = (
+    "Failover is paused: add --brain pc / --brain mac to the gate lines in authorized_keys."
+)
+DOCKER_UP_FAILED_TEXT = "Failover: the Mac brain did not start. Check Docker on the Mac."
 
 
 def _log(log_path, event, detail=""):
@@ -53,11 +58,19 @@ def _rotate_log(log_path):
 
 
 def _load_state(state_path, log_path):
+    # type: (str, str) -> tuple
+    """The saved state dict, and whether it had to be recovered from a
+    corrupt file (including a file that parses but isn't a JSON object -
+    a state file's shape is always an object, so anything else is exactly
+    as unusable as a parse error)."""
     raw = _senders.read_text(state_path, "")
     if not raw.strip():
-        return {}
+        return {}, False
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("state file is not a JSON object")
+        return parsed, False
     except ValueError:
         bad_path = "%s.bad-%d" % (state_path, int(datetime.now(timezone.utc).timestamp()))
         try:
@@ -65,11 +78,24 @@ def _load_state(state_path, log_path):
         except OSError:
             pass
         _log(log_path, "error", "corrupt_state")
-        return {}
+        return {}, True
 
 
 def _save_state(state_path, st):
     _senders.write_atomic(state_path, json.dumps(st), mode=0o600)
+
+
+def _strip_matching_quotes(value):
+    """Strip one pair of surrounding quotes (" or '), same as a shell would.
+
+    .env.example values like OPENCLAW_GATEWAY_TOKEN are meant to be
+    plugged in unquoted, but people sometimes copy a quoted value from
+    elsewhere; only a matching pair at both ends is stripped, so a lone
+    or mismatched quote (probably part of the real value) is left alone.
+    """
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
+        return value[1:-1]
+    return value
 
 
 def _read_env(env_path):
@@ -80,7 +106,7 @@ def _read_env(env_path):
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        env[key.strip()] = value.strip()
+        env[key.strip()] = _strip_matching_quotes(value.strip())
     return env
 
 
@@ -91,9 +117,9 @@ def _clean_lease(raw):
 
 def _send_notice(io, cfg, mark_handle, text, log_path):
     if not mark_handle:
-        # No Mark handle configured: log that a notice was skipped, never
-        # the notice text itself.
-        _log(log_path, "notice_skipped", "no_mark_handle")
+        # No Mark handle configured: the caller already logged
+        # "config_missing mark_handle" once for this tick, so nothing
+        # more to log here, never the notice text itself.
         return False
     return io.gate_send(
         cfg["clock_ssh_key"], cfg["clock_known_hosts"], cfg["clock_ssh_target"],
@@ -101,12 +127,61 @@ def _send_notice(io, cfg, mark_handle, text, log_path):
     )
 
 
-def _run_failover(cfg, io, st, mode, lease, mark_handle, log_path):
+def _gate_is_unfenced(authorized_keys_path):
+    # type: (str) -> bool
+    """Whether any imsg-ssh-gate line in authorized_keys lacks --brain.
+
+    Such a line accepts connections without a role, so the gate cannot
+    tell a pc/mac brain connection from a clock connection and fencing
+    (ruling R13) does not apply. A file that cannot be read is treated
+    the same way: fail safe, never assume the gate is fenced when that
+    cannot actually be verified.
+    """
+    try:
+        with open(authorized_keys_path, "r") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return True
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "imsg-ssh-gate" in stripped and "--brain" not in stripped:
+            return True
+    return False
+
+
+def _notice_unfenced_gate(cfg, io, st, mark_handle, now, log_path):
+    gate_state = st.setdefault("gate_fence", {})
+    last_iso = gate_state.get("last_notice_at")
+    due = True
+    if last_iso:
+        try:
+            due = now - schedule.parse_iso(last_iso) >= GATE_NOTICE_INTERVAL
+        except Exception:
+            due = True
+    if due:
+        _send_notice(io, cfg, mark_handle, GATE_NOTICE_TEXT, log_path)
+        gate_state["last_notice_at"] = schedule.to_iso_utc(now)
+
+
+def _run_failover(cfg, io, st, mode, lease, mark_handle, now, log_path):
     fst = st["failover"]
     backup = copy.deepcopy(fst)
     lease_ok = True
 
     try:
+        if mode in ("auto", "mac"):
+            akp = cfg.get("authorized_keys_path") or os.path.expanduser("~/.ssh/authorized_keys")
+            if _gate_is_unfenced(akp):
+                # Skip failover entirely this tick: do not call
+                # failover.step, and leave st["failover"] untouched so a
+                # paused run keeps its counters exactly as they were,
+                # same as mode "off".
+                _log(log_path, "unfenced_gate_line", "")
+                _notice_unfenced_gate(cfg, io, st, mark_handle, now, log_path)
+                return
+
         if mode == "off":
             pc_ok = False
             pc_sync = False
@@ -137,15 +212,56 @@ def _run_failover(cfg, io, st, mode, lease, mark_handle, log_path):
                 _log(log_path, "error", "lease_write")
 
         if lease_ok:
+            docker_ok = True
             if acts.docker == "up":
-                io.docker_compose(cfg["docker"], cfg["repo_dir"], "up")
+                docker_ok = io.docker_compose(cfg["docker"], cfg["repo_dir"], "up")
             elif acts.docker == "stop":
                 io.docker_compose(cfg["docker"], cfg["repo_dir"], "stop")
 
-            for text in acts.notices:
-                _send_notice(io, cfg, mark_handle, text, log_path)
+            if acts.docker == "up" and not docker_ok:
+                _send_notice(io, cfg, mark_handle, DOCKER_UP_FAILED_TEXT, log_path)
+            else:
+                for text in acts.notices:
+                    _send_notice(io, cfg, mark_handle, text, log_path)
     finally:
         _save_state(cfg["state_path"], st)
+
+
+def _recover_last_done(cfg, st, allow, now, log_path):
+    """After a corrupt state file is recovered (moved aside, state reset
+    to {}), seed last_done from the reminder files still on disk.
+
+    Without this, a recurring reminder whose last-sent slot only lived in
+    the lost state would look never-sent and fire again for every slot
+    the lookback window still covers - possibly several repeats in one
+    tick. Setting last_done to the latest due slot (the same slot the
+    clock would itself pick next) makes that slot look already handled,
+    so nothing already sent before the corruption is sent again; only
+    slots after now are still eligible.
+    """
+    reminders_dir = cfg["reminders_dir"]
+    if not os.path.isdir(reminders_dir):
+        return
+    last_done = st["clock"].setdefault("last_done", {})
+    try:
+        filenames = sorted(f for f in os.listdir(reminders_dir) if f.endswith(".json"))
+    except OSError:
+        return
+    for filename in filenames:
+        file_id = filename[:-len(".json")]
+        path = os.path.join(reminders_dir, filename)
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            data = json.loads(raw.decode("utf-8"))
+            rem = schedule.validate(data, allow=allow, file_id=file_id)
+        except Exception:
+            # An invalid file is the clock's problem to log and skip, not
+            # this recovery step's; just leave it out of the seed.
+            continue
+        slot = schedule.due_slot(rem, now, None)
+        if slot is not None:
+            last_done[rem["id"]] = schedule.to_iso_utc(slot)
 
 
 def _run_clock(cfg, io, st, now, lease, allow, mark_handle, log_path):
@@ -202,19 +318,33 @@ def tick(cfg, now=None, io=None):
         return
 
     try:
-        st = _load_state(cfg["state_path"], log_path)
+        st, recovered = _load_state(cfg["state_path"], log_path)
         st.setdefault("failover", {})
         st.setdefault("clock", {})
 
-        env = _read_env(cfg["env_path"])
-        allow = schedule.parse_allowlist(env.get("IMESSAGE_ALLOW_FROM", ""))
-        mark_handle = env.get(cfg["mark_handle_env"]) or None
+        try:
+            env = _read_env(cfg["env_path"])
+            allow = schedule.parse_allowlist(env.get("IMESSAGE_ALLOW_FROM", ""))
+            mark_handle = env.get(cfg["mark_handle_env"]) or None
+        except Exception as exc:
+            # A malformed .env or allowlist must not stop failover from
+            # running: fall back to "nobody allowed, no Mark handle" for
+            # this tick rather than crashing before failover even starts.
+            _log(log_path, "error", "env %s" % type(exc).__name__)
+            allow = set()
+            mark_handle = None
+
+        if not mark_handle:
+            _log(log_path, "config_missing", "mark_handle")
+
+        if recovered:
+            _recover_last_done(cfg, st, allow, now, log_path)
 
         mode = _senders.read_text(cfg["mode_path"], "off").strip()
         lease = _clean_lease(_senders.read_text(cfg["lease_path"], "pc"))
 
         try:
-            _run_failover(cfg, io, st, mode, lease, mark_handle, log_path)
+            _run_failover(cfg, io, st, mode, lease, mark_handle, now, log_path)
         except Exception as exc:
             _log(log_path, "error", "failover %s" % type(exc).__name__)
 

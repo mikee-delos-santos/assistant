@@ -46,7 +46,8 @@ if [ ! -f "${CONFIG_PATH}" ]; then
   "mark_handle_env": "MARK_IMESSAGE_HANDLE",
   "clock_ssh_key": "${BC_DIR}/clock_ed25519",
   "clock_known_hosts": "${BC_DIR}/known_hosts",
-  "clock_ssh_target": "${USER}@127.0.0.1"
+  "clock_ssh_target": "${USER}@127.0.0.1",
+  "authorized_keys_path": "${HOME_DIR}/.ssh/authorized_keys"
 }
 CONFIGEOF
   chmod 600 "${CONFIG_PATH}"
@@ -123,6 +124,9 @@ echo "from=\"127.0.0.1,::1\",restrict,command=\"${HOME_DIR}/.imsg-bridge/imsg-ss
 echo ""
 echo "Remote Login must be on for this to work: System Settings > General >"
 echo "Sharing > Remote Login."
+echo ""
+echo "Set MARK_IMESSAGE_HANDLE in the repo .env so Mark gets failover and"
+echo "reminder notices on this Mac."
 echo ""
 echo "brain-control is installed but mode is 'off' (no automatic failover yet)."
 echo "Edit ${CONFIG_PATH} with the real PC health URL, hooks URLs, and Syncthing"
