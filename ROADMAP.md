@@ -47,6 +47,12 @@ Soon - make the assistant yours
 | N4 | Mark | Save the assistant number as a contact (the name from N2) on Mark's and his wife's phones | |
 | N5 | Wife (optional) | Wife texts the assistant number; expect a reply | Her handle is already in allowFrom. Option B step 7 |
 
+Now (2026-09-14)
+| # | Who | Task | Notes |
+|---|---|---|---|
+| N8 | Mark + PC | SMS failsafe: SMS2 (allowFrom format check) and SMS5 if needed | Gate change live; SMS test passed on the Mac side 2026-09-14 |
+| N9 | Mark + PC | Model fallbacks (M0-M7) | Needs Mark's approval (M0) and a new OpenAI API key (M3) |
+
 PC Claude cleanups
 | # | Who | Task | Notes |
 |---|---|---|---|
@@ -188,6 +194,91 @@ Mac Claude (gate change):
 PC / OpenClaw: expected to need no change - the channel reads whatever imsg surfaces and the
 family numbers are already allowlisted. Verify with one SMS test after the gate change (turn
 Mark's iMessage off briefly, or text from a non-iMessage path).
+
+Mac Claude status (2026-09-14): GATE CHANGE DONE AND INSTALLED.
+- Inbound SMS already worked before the change: a forwarded SMS from Mark reached the brain
+  (chat.db: service SMS, destination = assistant number) and the brain answered it. The old
+  gate turned that answer into an iMessage.
+- New outbound rule in `scripts/imsg-ssh-gate.py` (reviewed; findings fixed):
+
+  | Person's LAST message to the assistant | On the family SMS list? | Reply |
+  |---|---|---|
+  | SMS or RCS | yes | SMS (if the SMS cannot even be addressed, iMessage instead; no double send) |
+  | SMS or RCS | no (strangers, short codes, promos) | NO reply (the send is rejected) |
+  | iMessage | - | iMessage (as before) |
+
+- The family SMS list is private on the Mac (`~/.imsg-bridge/assistant.json`,
+  `sms_allowed_handles`, built from `IMESSAGE_ALLOW_FROM`). Numbers are compared in E.164
+  form, so `+63...`, `63...` and `09...` all match.
+- The brain may ask for service `auto`, `imessage`, or `sms`; the gate picks the real one.
+- The delivery check now matches the service and watches `error`/`is_sent`. A Messages
+  delivery error comes back as "Delivery outcome unknown" with `retry_safe: false`.
+- Side effect to know: a later proactive message (for example a reminder) uses the service
+  of that person's LAST message. After Mark texts by SMS, he gets SMS until he uses iMessage.
+- SMS goes out through the assistant iPhone's SIM, so it costs whatever that SIM plan charges.
+
+| # | Who | Step | Status |
+|---|---|---|---|
+| SMS1 | Mark | Keep Text Message Forwarding on for the Mac on the assistant iPhone, and keep that iPhone powered and online (SMS in and out go through it) | DONE (inbound SMS seen 2026-09-14) |
+| SMS2 | PC | `git pull`. No OpenClaw config change is expected. Check that `channels.imessage.allowFrom` holds the family numbers in `+63...` form (same form as the SMS handles). Do not print them | TODO |
+| SMS3 | Mark + PC | Test: Mark turns iMessage OFF on his iPhone (Settings > Apps > Messages > iMessage), texts the assistant number (green bubble), expects a GREEN reply, then turns iMessage back ON | DONE on the Mac side 2026-09-14 17:50 - SMS in, SMS reply sent (is_sent=1, error 0); Mark to confirm the green reply arrived |
+| SMS4 | Mac | During SMS3, read `~/.imsg-bridge/gate.log` and chat.db: the reply row must be service SMS with no error | DONE 2026-09-14 - gate log `direct-send ok (1:1, SMS, ...)`, reply row service SMS, no error |
+| SMS5 | PC | If OpenClaw logs a send error during SMS3, copy only the error text into this table (no numbers, no message text) | TODO |
+
+## Handoff: model fallbacks, Claude primary (2026-09-14)
+
+Goal: Claude stays the primary brain, but the assistant keeps working when Claude is down,
+rate-limited, or the Anthropic spend cap is hit. Lowest cost, no Chinese-developed models,
+and nothing that breaks a provider's terms of service.
+
+Research summary (Mac Claude, 2026-09-14; sources are OpenClaw docs, OpenClaw GitHub issues,
+provider pricing pages, and 2026 news. Items marked (2nd) came from secondary sites):
+- OpenClaw failover keys: `agents.defaults.model.primary`, `agents.defaults.model.fallbacks`
+  (ordered list), per-agent `agents.entries.<id>.model`, and `auth.order.<provider>`.
+  Fallback triggers include auth errors, rate limits, overload, timeouts, billing disables,
+  and model-not-found. Context overflow does NOT trigger a fallback.
+- CLI: `openclaw models status [--probe]`, `openclaw models list --provider <id>`,
+  `openclaw models set <provider/model>`, `openclaw models fallbacks list|add|remove|clear`.
+  Check each with `--help` on the PC before using it.
+- Terms of service:
+  - BANNED: Claude Free/Pro/Max subscription login in OpenClaw (Anthropic), and Gemini CLI /
+    Antigravity login (Google suspended accounts in Feb-Mar 2026). Never set these up.
+  - GRAY (no written permission): ChatGPT Plus/Pro via Codex OAuth, GitHub Copilot as a model
+    provider, SuperGrok / X Premium+ login. Not used in this plan.
+  - SAFE: normal pay-per-use API keys (Anthropic, OpenAI, xAI, Mistral, Google API key,
+    Bedrock, Vertex).
+- Known OpenClaw problems: Gemini sometimes prints fake tool calls (issue #3344); Mistral tool
+  calls fail with HTTP 400 on tool-call id format (#57672); rate-limit failover may not
+  trigger (#57760); a fallback retry inserts a generic "Continue where you left off" user
+  message (#65760). Small local models are prompt-injection prone (OpenClaw FAQ).
+- Minors: Anthropic API terms are 18+; Google Gemini API terms forbid services likely to be
+  used by under-18s; OpenAI allows 13+ with parental permission and asks for extra safeguards.
+  Today only adults are on `allowFrom`. Do NOT add the kids as senders without a decision.
+- Prices per 1M tokens, input/output: Claude Haiku 4.5 $1/$5; Claude Sonnet 5 $2/$10 (verify);
+  Claude Sonnet 4.6 $3/$15 (2nd, verify); GPT-5-mini $0.25/$2; GPT-5-nano $0.05/$0.40.
+
+Decision (recommended by Mac Claude; Mark to approve in M0):
+```
+primary     anthropic/claude-sonnet-5     existing Anthropic API key (only if M1 confirms id + price)
+fallback 1  anthropic/claude-haiku-4-5    same key; covers Sonnet rate limits / overload
+fallback 2  openai/gpt-5-mini             NEW OpenAI API key with a hard monthly limit;
+                                          covers Anthropic outage or the Anthropic spend cap
+heartbeat   anthropic/claude-haiku-4-5 + lightContext + isolatedSession (only if heartbeat is used)
+NOT used    any subscription login, Gemini (tool-call bug + under-18 terms), Mistral (tool-call
+            bug), Chinese-developed models, local models (prompt injection risk with tools)
+```
+
+| # | Who | Step | Status |
+|---|---|---|---|
+| M0 | Mark | Approve the chain above (or change it). Codex/ChatGPT subscription login stays OFF unless Mark accepts the gray-area risk in writing here | TODO |
+| M1 | PC | `git pull`. Run `openclaw models status` and `openclaw models list --provider anthropic` and `--provider openai`. Record here: the exact ids for Sonnet 5, Haiku 4.5, GPT-5-mini, and the OpenClaw version. Check claude.com/pricing and developers.openai.com/api/docs/pricing and record the current prices | TODO |
+| M2 | PC | In the installed OpenClaw version, check whether issues #57760 (rate-limit failover) and #65760 (fallback retry prompt) are fixed. Record the result | TODO |
+| M3 | Mark | Create an OpenAI API key on platform.openai.com with a hard monthly budget (for example $10). Put it in the PC `.env` as `OPENAI_API_KEY` yourself (never in chat, never in git) | TODO |
+| M4 | PC | Recreate the container so it reads the new `.env`: `docker compose up -d --force-recreate openclaw`. Then set the chain with the CLI (primary, then clear and add fallbacks in order). Do NOT use any subscription or OAuth login | TODO |
+| M5 | PC | `openclaw models status --probe`: both providers must be healthy. Record the result (no keys) | TODO |
+| M6 | PC + Mark | Fallback test without breaking Claude: in a PC chat session, `/model openai/gpt-5-mini -s`, ask one question that uses a tool (for example list chores), then switch back. Then Mark texts the assistant once to confirm iMessage replies still use Claude | TODO |
+| M7 | PC | If heartbeat is used: set the heartbeat model to Haiku with `lightContext: true` and `isolatedSession: true` | TODO |
+| M8 | Mac | Later, for failover to the Mac brain: copy `OPENAI_API_KEY` to the Mac `.env` over Taildrop (ties into L1) | TODO |
 
 ## Architecture (see docs/decisions/0001-architecture.md)
 PC = always-on primary brain. Mac = warm backup brain + the "Apple bridge" for
