@@ -10,6 +10,7 @@ object so tests can swap in fakes. Nothing here ever logs a secret
 import json
 import os
 import re
+import select
 import subprocess
 import tempfile
 import time
@@ -149,11 +150,21 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
     Speaks one JSON-RPC "send" request over ssh to the gate's clock role
     and waits for a matching response. Any error, timeout, or malformed
     response reads as failure; it never raises.
+
+    Waiting for that response never blocks past `timeout`: a stalled ssh
+    connection or a gate that never answers must not hang the tick, since
+    the tick holds a flock and a hung tick blocks every later tick too.
+    select() is used on the pipe's raw fd (not the buffered file object)
+    so a byte that already arrived is never missed just because select
+    was not asked about it again.
     """
     cmd = [
         "ssh", "-T", "-i", ssh_key,
         "-o", "IdentitiesOnly=yes",
         "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=2",
         "-o", "UserKnownHostsFile=%s" % known_hosts,
         "-o", "StrictHostKeyChecking=yes",
         target,
@@ -167,6 +178,7 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
     }) + "\n"
 
     proc = None
+    ok = False
     try:
         proc = subprocess.Popen(
             cmd,
@@ -175,12 +187,24 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
         proc.stdin.write(request.encode("utf-8"))
         proc.stdin.flush()
 
+        fd = proc.stdout.fileno()
+        buf = b""
         deadline = time.time() + timeout
-        ok = False
-        while time.time() < deadline:
-            line = proc.stdout.readline()
-            if not line:
-                break
+        while True:
+            newline_at = buf.find(b"\n")
+            if newline_at == -1:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                ready, _, _ = select.select([fd], [], [], remaining)
+                if not ready:
+                    break  # timed out waiting for the next byte
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break  # gate closed the connection without answering
+                buf += chunk
+                continue
+            line, buf = buf[:newline_at], buf[newline_at + 1:]
             try:
                 msg = json.loads(line.decode("utf-8"))
             except ValueError:
@@ -188,22 +212,28 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
             if msg.get("id") == 1:
                 ok = "result" in msg and "error" not in msg
                 break
-        return ok
     except Exception:
-        return False
+        ok = False
     finally:
         if proc is not None:
             try:
                 proc.stdin.close()
             except Exception:
                 pass
-            try:
-                proc.wait(timeout=10)
-            except Exception:
+            if proc.poll() is None:
                 try:
                     proc.kill()
                 except Exception:
                     pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+    return ok
 
 
 def hook_agent(base_url, token, payload):
