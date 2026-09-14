@@ -105,35 +105,84 @@ ONE_TO_ONE_STYLE = 45  # chat.style for a 1:1 chat; 43 is a group
 OSASCRIPT = "/usr/bin/osascript"
 SEND_TIMEOUT = 20
 DELIVERY_WAIT = 8  # seconds to find the sent row in chat.db
-ALLOWED_SERVICES = {"auto", "imessage"}
+# The brain may ask for any of these, but the gate picks the real service itself.
+ALLOWED_SERVICES = {"auto", "imessage", "sms"}
+PHONE_HANDLE = re.compile(r"\+\d{7,15}")
+# Services that arrive through the assistant iPhone as carrier text messages.
+TEXT_SERVICES = {"SMS", "RCS"}
+COUNTRY_CODE = "63"  # Philippines: local numbers look like 09XXXXXXXXX
+
+
+def e164(handle):
+    """Best-effort E.164 form of a phone handle, else None."""
+    digits = re.sub(r"[\s\-()]", "", handle or "")
+    if re.fullmatch(r"\+\d{7,15}", digits):
+        return digits
+    if re.fullmatch(r"0\d{10}", digits):
+        return "+" + COUNTRY_CODE + digits[1:]
+    if re.fullmatch(r"%s\d{10}" % COUNTRY_CODE, digits):
+        return "+" + digits
+    return None
 # Same AppleScript path as `imsg send` when it has no existing chat: address the buddy on
-# the iMessage service. Recipient and text arrive as arguments, never inside the script.
+# the chosen service. Recipient, text, and service arrive as arguments, never in the script.
+# The phase tells the gate whether Messages was asked to send before an error happened.
 BUDDY_SEND_SCRIPT = """on run argv
     set theRecipient to item 1 of argv
     set theMessage to item 2 of argv
     set dryRun to item 3 of argv
-    tell application "Messages"
-        set targetService to first service whose service type is iMessage
-        set targetBuddy to buddy theRecipient of targetService
-        if dryRun is "1" then return "dry-run " & (id of targetBuddy)
-        send theMessage to targetBuddy
-    end tell
+    set theService to item 4 of argv
+    set phase to "pre_dispatch"
+    try
+        tell application "Messages"
+            if theService is "sms" then
+                set targetService to first service whose service type is SMS
+            else
+                set targetService to first service whose service type is iMessage
+            end if
+            set targetBuddy to buddy theRecipient of targetService
+            if dryRun is "1" then
+                get id of targetBuddy
+                return "dry-run ok"
+            end if
+            set phase to "dispatch_started"
+            send theMessage to targetBuddy
+        end tell
+    on error errMsg number errNum
+        return "error " & phase & " " & errNum
+    end try
     return "sent"
 end run
 """
 
 
-def buddy_send(handle, text, dry_run=False):
-    """Send one iMessage to a handle. Returns (ok, detail)."""
+def buddy_send(handle, text, service="imessage", dry_run=False):
+    """Send one message to a handle over "imessage" or "sms".
+
+    Returns (status, detail). status is "sent", "pre_dispatch" (nothing was sent, safe to
+    try another way), or "unknown" (Messages may have sent it; do not retry). detail never
+    holds the handle or the text.
+    """
     try:
-        done = subprocess.run([OSASCRIPT, "-", handle, text, "1" if dry_run else "0"],
+        done = subprocess.run([OSASCRIPT, "-", handle, text, "1" if dry_run else "0",
+                               "sms" if service == "sms" else "imessage"],
                               input=BUDDY_SEND_SCRIPT.encode(), capture_output=True,
                               timeout=SEND_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return False, "osascript timed out"
+        return "unknown", "osascript timed out"
+    except OSError:
+        return "pre_dispatch", "osascript could not start"
+    out = done.stdout.decode("utf-8", "replace").strip()[:80]
     if done.returncode != 0:
-        return False, done.stderr.decode("utf-8", "replace").strip()[:300]
-    return True, done.stdout.decode("utf-8", "replace").strip()[:80]
+        number = re.search(r"\((-?\d+)\)", done.stderr.decode("utf-8", "replace"))
+        return "unknown", "osascript exit %d, error %s" % (
+            done.returncode, number.group(1) if number else "unknown")
+    if out == "sent" or out.startswith("dry-run "):
+        return "sent", out
+    match = re.fullmatch(r"error (pre_dispatch|dispatch_started) (-?\d+)", out)
+    if match:
+        status = "pre_dispatch" if match.group(1) == "pre_dispatch" else "unknown"
+        return status, "AppleScript error %s" % match.group(2)
+    return "unknown", "unexpected osascript output"
 
 
 def risky_key(value):
@@ -172,11 +221,17 @@ class Visibility:
     def __init__(self):
         self.handles = []
         self.accounts = []
+        self.sms_allowed = set()
         self.cutoff_ns = None
         try:
             with open(CONFIG) as fh:
                 cfg = json.load(fh)
             handles = sorted({str(h).strip().lower() for h in cfg["assistant_handles"]} - {""})
+            # Family numbers that may get SMS replies. Missing or bad -> no SMS at all.
+            sms = cfg.get("sms_allowed_handles", [])
+            self.sms_allowed = ({str(h).strip() for h in sms if isinstance(h, str)
+                                 and PHONE_HANDLE.fullmatch(h.strip())}
+                                if isinstance(sms, list) else set())
             since = calendar.timegm(time.strptime(cfg["visible_since_utc"], "%Y-%m-%dT%H:%M:%SZ"))
             floor = calendar.timegm(time.strptime(CUTOFF_FLOOR_UTC, "%Y-%m-%dT%H:%M:%SZ"))
             if since < floor or since > time.time() + 86400:
@@ -186,7 +241,7 @@ class Visibility:
             # chat.db stores the account as "E:<email>" or "P:<phone>".
             self.accounts = [("e:" if "@" in h else "p:") + h for h in handles]
         except (OSError, ValueError, KeyError, TypeError) as err:
-            self.handles, self.accounts, self.cutoff_ns = [], [], None
+            self.handles, self.accounts, self.cutoff_ns, self.sms_allowed = [], [], None, set()
             log("config", "visibility config unusable, all reads hidden: %s" % short(str(err)))
         self._conn = None
         self._lock = threading.Lock()
@@ -243,7 +298,11 @@ class Visibility:
             self._ints(ids))
 
     def one_to_one_handle(self, params):
-        """Handle of a 1:1 chat the brain may send to, else None.
+        return self.eligible_target(params)[0]
+
+    def eligible_target(self, params):
+        """(handle, service of the latest inbound message) for a 1:1 chat the brain may send
+        to, else (None, None). The service is "SMS" or "iMessage" as chat.db stores it.
 
         Allowed only if that person has sent at least one message to the assistant account
         after the switch (inbound, is_from_me = 0). The assistant's own outgoing messages
@@ -251,15 +310,15 @@ class Visibility:
         """
         supplied = [k for k in CHAT_TARGET_KEYS if k in params]
         if len(supplied) != 1:
-            return None
+            return None, None
         key, value = supplied[0], params[supplied[0]]
         column = {"chat_id": "ROWID", "chat_identifier": "chat_identifier", "chat_guid": "guid"}[key]
         if key == "chat_id" and (not isinstance(value, int) or isinstance(value, bool)):
-            return None
+            return None, None
         if key != "chat_id" and not isinstance(value, str):
-            return None
+            return None, None
         if not self.handles or self.cutoff_ns is None:
-            return None
+            return None, None
         with self._lock:
             conn = self._connection()
             try:
@@ -268,14 +327,15 @@ class Visibility:
                     (value, ONE_TO_ONE_STYLE)).fetchall()
                 identifiers = {r[1] for r in rows if r[1]}
                 if len(identifiers) != 1:
-                    return None
+                    return None, None
                 handle = identifiers.pop()
                 # Any 1:1 chat row for this handle (iMessage and SMS rows can both exist).
                 all_rows = [r[0] for r in conn.execute(
                     "select ROWID from chat where chat_identifier = ? and style = ?",
                     (handle, ONE_TO_ONE_STYLE))]
-                query = ("select 1 from chat_message_join j join message m on m.ROWID = j.message_id"
-                         " where j.chat_id in (%s) and m.is_from_me = 0 and %s limit 1") % (
+                query = ("select m.service from chat_message_join j join message m on m.ROWID = j.message_id"
+                         " where j.chat_id in (%s) and m.is_from_me = 0 and %s"
+                         " order by m.date desc limit 1") % (
                     ",".join("?" * len(all_rows)),
                     self.MATCH.format(accounts=",".join("?" * len(self.accounts)),
                                       handles=",".join("?" * len(self.handles))))
@@ -285,19 +345,36 @@ class Visibility:
                 self._conn = None
                 conn.close()
                 raise
-        return handle if inbound else None
+        if not inbound:
+            return None, None
+        return handle, inbound[0]
 
-    def sent_row(self, handle, since_ns):
-        """(id, guid) of an outgoing assistant message to handle newer than since_ns."""
+    def reply_service(self, handle, last_inbound_service):
+        """Reply on the service the person last used.
+
+        Returns "imessage", "sms", or None (do not send). A carrier text (SMS or RCS) gets an
+        SMS reply only for allowlisted family numbers. Anyone else who reached the assistant
+        by text message gets NO reply: that is how strangers and short codes reach it.
+        """
+        if last_inbound_service in TEXT_SERVICES:
+            return "sms" if e164(handle) in self.sms_allowed else None
+        return "imessage"
+
+    def sent_row(self, handle, since_ns, label):
+        """(id, guid, error, is_sent) of an outgoing message to handle over the label service
+        ("SMS" or "iMessage") newer than since_ns, else None."""
         with self._lock:
             conn = self._connection()
-            query = ("select m.ROWID, m.guid from message m join chat_message_join j"
+            query = ("select m.ROWID, m.guid, m.error, m.is_sent from message m join chat_message_join j"
                      " on j.message_id = m.ROWID join chat c on c.ROWID = j.chat_id"
                      " where c.chat_identifier = ? and c.style = ? and m.is_from_me = 1"
-                     " and m.date >= ? and lower(coalesce(m.destination_caller_id, '')) in (%s)"
+                     " and m.date >= ? and m.service = ?"
+                     " and (lower(coalesce(m.destination_caller_id, '')) in (%s)"
+                     " or (m.service = 'SMS' and c.service_name = 'SMS'))"
                      " order by m.date desc limit 1") % ",".join("?" * len(self.handles))
             try:
-                return conn.execute(query, [handle, ONE_TO_ONE_STYLE, since_ns] + self.handles).fetchone()
+                return conn.execute(query, [handle, ONE_TO_ONE_STYLE, since_ns, label]
+                                    + self.handles).fetchone()
             except sqlite3.Error:
                 self._conn = None
                 conn.close()
@@ -546,10 +623,11 @@ def run_rpc(args):
                     del params[k]
                 if stripped:
                     log("strip", "removed %s from send (no bridge on this Mac)" % ",".join(stripped))
-                # iMessage only: SMS on this Mac can go out through Mark's iPhone.
+                # The brain may name a service, but the gate picks it: reply on the service
+                # the person last used, SMS only for allowlisted family numbers.
                 service = params.get("service", "auto")
                 if not isinstance(service, str) or service not in ALLOWED_SERVICES:
-                    reject(request_id, "only iMessage sends are allowed")
+                    reject(request_id, "service must be auto, imessage, or sms")
                     continue
                 # imsg resolves every 1:1 send to the old chat in chat.db, which Messages
                 # cannot find after the Apple ID switch (AppleScript -1728). The gate sends
@@ -559,9 +637,10 @@ def run_rpc(args):
                 if not target and isinstance(params.get("to"), str):
                     target = {"chat_identifier": params["to"].strip()}
                 try:
-                    handle = visibility.one_to_one_handle(target) if target else None
+                    handle, last_service = (visibility.eligible_target(target) if target
+                                            else (None, None))
                 except sqlite3.Error:
-                    handle = None
+                    handle, last_service = None, None
                 text = params.get("text")
                 if not handle:
                     reject(request_id, "send allowed only to a 1:1 chat that messaged the assistant")
@@ -569,26 +648,48 @@ def run_rpc(args):
                 if not isinstance(text, str) or not text.strip():
                     reject(request_id, "send needs text")
                     continue
+                channel = visibility.reply_service(handle, last_service)
+                if channel is None:
+                    reject(request_id, "no reply: this person reached the assistant by text message "
+                                       "and is not on the family SMS list")
+                    continue
                 started_ns = (int(time.time()) - APPLE_EPOCH - 2) * 1000000000
-                ok, detail = buddy_send(handle, text)
+                status, detail = buddy_send(handle, text, channel)
+                if status == "pre_dispatch" and channel == "sms":
+                    # Nothing was sent, so trying iMessage cannot cause a double message.
+                    log("sms", "SMS not possible (%s); falling back to iMessage" % detail)
+                    channel = "imessage"
+                    status, detail = buddy_send(handle, text, channel)
+                label = "SMS" if channel == "sms" else "iMessage"
                 row = None
-                if ok:
+                if status == "sent":
+                    # Wait for the row, then for Messages to mark it sent or failed. An SMS goes
+                    # through the assistant iPhone, so a failure can show up a few seconds later.
                     for _ in range(DELIVERY_WAIT * 2):
-                        row = visibility.sent_row(handle, started_ns)
-                        if row:
+                        row = visibility.sent_row(handle, started_ns, label)
+                        if row and (row[2] or row[3]):
                             break
                         time.sleep(0.5)
-                if ok and row:
-                    log("direct-send", "ok (1:1, %d chars, row %d)" % (len(text), row[0]))
+                if status == "sent" and row and row[2]:
+                    status, detail = "unknown", "Messages reported delivery error %s" % row[2]
+                    row = None
+                if status == "sent" and row:
+                    log("direct-send", "ok (1:1, %s, %d chars, row %d%s)" % (
+                        label, len(text), row[0], "" if row[3] else ", not yet marked sent"))
                     result = {"jsonrpc": "2.0", "id": request_id,
                               "result": {"ok": True, "transport": "applescript",
-                                         "service": "iMessage", "id": row[0],
+                                         "service": label, "id": row[0],
                                          "guid": row[1], "message_id": row[1]}}
+                elif status == "pre_dispatch":
+                    log("direct-send", "failed before sending (%s): %s" % (label, detail))
+                    result = {"jsonrpc": "2.0", "id": request_id,
+                              "error": {"code": -32603, "message": "Delivery failed before dispatch",
+                                        "data": {"transport": "applescript", "operation": "send",
+                                                 "retry_safe": True, "disposition": "not_started",
+                                                 "detail": detail}}}
                 else:
-                    number = re.search(r"\((-?\d+)\)", detail or "")
-                    reason = ("not found in chat.db after send" if ok else
-                              "AppleScript error %s" % (number.group(1) if number else "unknown"))
-                    log("direct-send", "failed: %s" % reason)
+                    reason = "not found in chat.db after send" if status == "sent" else detail
+                    log("direct-send", "outcome unknown (%s): %s" % (label, reason))
                     # Messages may still deliver after a timeout or a late error, so a retry
                     # could send twice.
                     result = {"jsonrpc": "2.0", "id": request_id,
