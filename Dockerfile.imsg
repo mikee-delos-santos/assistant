@@ -12,8 +12,13 @@ RUN apt-get update \
 COPY scripts/imsg-over-ssh.sh /usr/local/bin/imsg-over-ssh
 # The single fixed launcher for remote Claude Code sessions (infopathy/mindr/work)
 COPY scripts/claude-launch.sh /usr/local/bin/claude-launch
+# The reminder CLI Brice uses to add/list/cancel reminders, plus the
+# validation module it imports (see scripts/brain_control/schedule.py).
+COPY scripts/brain_control/__init__.py scripts/brain_control/schedule.py /usr/local/lib/brain_control/brain_control/
+COPY scripts/reminder.py /usr/local/bin/reminder
+ENV BRAIN_CONTROL_LIB=/usr/local/lib/brain_control
 # Strip any CR (Windows checkouts can add CRLF, which breaks the shebang), then make executable
-RUN sed -i 's/\r$//' /usr/local/bin/imsg-over-ssh /usr/local/bin/claude-launch \
- && chmod 0755 /usr/local/bin/imsg-over-ssh /usr/local/bin/claude-launch
+RUN sed -i 's/\r$//' /usr/local/bin/imsg-over-ssh /usr/local/bin/claude-launch /usr/local/bin/reminder \
+ && chmod 0755 /usr/local/bin/imsg-over-ssh /usr/local/bin/claude-launch /usr/local/bin/reminder
 
 USER node
