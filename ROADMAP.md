@@ -129,6 +129,7 @@ Fail back (order matters: never two brains at once, and never a brain on stale m
 | F7 | PC | `docker exec openclaw claude-launch where` = `pc`; `docker exec openclaw claude-launch list` still works with the PC key | TODO |
 | F8 | Mark | Text Brice "where are you running?"; expect PC | TODO |
 | F9 | PC | Taildrop `CHORES_MCP_TOKEN` to the Mac (an env line in a file, delete the copy after) | TODO |
+| F10 | PC | Turn on Syncthing Staggered File Versioning for folder `openclaw-workspace` (GUI: Edit folder > File Versioning > Staggered, Maximum Age 365 days). Set the Versions Path OUTSIDE the workspace: `<PC repo>\\data\\stversions-openclaw-workspace` (create it first). Reason: the default `.stversions` sits inside the workspace, and OpenClaw could index old memory copies as current. The Mac is already set (2026-09-15, path `data/stversions-openclaw-workspace` in the Mac repo) | TODO |
 
 Known gap: between boot (F3) and F4 the PC brain runs on the old files. A text in that
 window can get a stale answer or create a conflict file. Keep the window short.
@@ -137,27 +138,61 @@ Open decision for Mark: automatic failover (see "Proposal: automatic failover" b
 
 ## Proposal: automatic failover (2026-09-15, not decided)
 
-Today failover is manual. The main risk of automation is split brain: both brains watch
-the same iMessage account, so both reply to every text and both write memory.
+Today failover is manual. The danger of automating it is split brain: two brains watch the
+same iMessage account, both reply to every text, and both write memory.
 
-Recommended shape (all on the Mac, because the Mac is always on and the gate on the Mac is
-the one path both brains use):
-1. A launchd job on the Mac runs every minute. It checks the PC brain health over the tailnet.
-2. PC healthy -> stop the Mac brain (if running). The PC always wins.
-3. PC unhealthy for 5 checks in a row -> start the Mac brain.
-4. Fencing in the gate: the gate learns which brain is calling (a `--brain pc|mac` argument
-   in each key's forced command) and only lets the "active" brain `watch` and `send`. The
-   launchd job writes the active brain to a lease file. This stops double replies during the
-   minute of overlap when the PC boots while the Mac brain still runs.
+Key fact: every brain reaches iMessage through the gate on the Mac. So the Mac can decide
+who is allowed to talk. No second brain can talk around it.
+
+Design (all on the Mac):
+1. Watchdog: a launchd job on the Mac runs every 60s.
+2. Lease file: `~/.imsg-bridge/active-brain` holds `pc` or `mac`. Only the watchdog writes it.
+3. Fencing in the gate: each brain key's forced command gets `--brain pc` or `--brain mac`.
+   The gate denies `watch.subscribe` and `send` to the brain that does not hold the lease.
+   A brain without the lease is deaf and mute, even if it is running.
+4. State machine:
+
+```
+            PC healthy 3 checks in a row
+            AND Syncthing says the PC needs 0 items
+     +------------------------------------------------+
+     |                                                |
+     v                                                |
+ [PC_ACTIVE]                                     [MAC_ACTIVE]
+ lease=pc                                        lease=mac
+ Mac brain stopped                               Mac brain running
+     |                                                ^
+     |  PC brain unhealthy 5 checks in a row (~5 min) |
+     +------------------------------------------------+
+        watchdog: lease=mac, then start Mac brain
+
+ Fail back order: stop Mac brain -> wait for Syncthing -> lease=pc
+```
+
+5. Health check = the PC gateway answers over the tailnet (not only "the PC is on").
+6. Optional: the watchdog texts Mark once on each switch ("Brice moved to the Mac").
+
+Cases:
+- PC boots while the Mac brain runs: the PC brain starts but has no lease, so it cannot hear
+  or send texts. The lease moves to the PC only after Syncthing shows the PC is in sync.
+  This also fixes the stale-memory window from the manual fail back.
+- The Mac cannot reach the PC but the PC is fine (tailnet problem): the Mac takes the lease.
+  The PC brain is fenced at the gate, so there is still only one voice.
+- The Mac is off: no iMessage at all, for either brain. Failover does not help that case.
+- Flapping: the 5-check and 3-check rules stop fast back-and-forth switching.
+
+Not planned, and why:
+- A cloud cron outside our machines: the lease must sit next to the gate. A cloud job adds a new
+  thing that can control the gate.
+- Watchdogs on both machines that both decide: two deciders can both pick themselves.
 
 Known gaps:
-- The PC brain starts at boot, but PC Syncthing starts at login. The PC brain can run on stale
-  memory until someone logs in. Fix options: start Syncthing at boot on the PC, or have a PC
-  task start the brain only after Syncthing reports in sync.
-- Cron reminders live only on the host where they were made. They need a design (for example,
-  keep reminders as Markdown in the workspace and let the active brain schedule them).
-- Wake-on-LAN (row "Wake-on-LAN (Mac wakes PC)") is still deferred. It would let the Mac wake
-  the PC instead of failing over.
+- A fenced PC brain can still write memory from heartbeat or cron jobs (not from texts).
+- Cron reminders live only on the host where they were made. They need their own design.
+- Wake-on-LAN (row "Wake-on-LAN (Mac wakes PC)") is still deferred.
+
+Work needed: gate change (security code, needs review), watchdog script, launchd plist, and a
+drill. About half a day with review.
 
 ## Handoff: Brice-launched remote Claude Code sessions (2026-09-13)
 
