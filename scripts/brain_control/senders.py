@@ -143,13 +143,24 @@ def write_atomic(path, data, mode=0o600):
         raise
 
 
-def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
-    # type: (str, str, str, str, str, float) -> bool
+def gate_send(ssh_key, known_hosts, target, handle, text, timeout=90):
+    # type: (str, str, str, str, str, float) -> str
     """Send one iMessage through the clock-fenced ssh gate.
 
     Speaks one JSON-RPC "send" request over ssh to the gate's clock role
-    and waits for a matching response. Any error, timeout, or malformed
-    response reads as failure; it never raises.
+    and waits for a matching response. Returns one of three outcomes,
+    never raises, and never guesses "ok" when the real outcome is
+    unknown:
+
+    - "ok": a matching response carrying a result and no error.
+    - "retry": the gate's own error says retry_safe is true, or ssh
+      exited/hit EOF before any byte of output arrived at all (the
+      request may never have reached the gate, so re-sending is safe).
+    - "final": everything else - an error with retry_safe false or
+      absent, a gate rejection (e.g. not the active brain), or a
+      timeout/EOF that happens only after some output was already seen.
+      Once output has started, the send may already be in flight on the
+      far side, so retrying could double-send.
 
     Waiting for that response never blocks past `timeout`: a stalled ssh
     connection or a gate that never answers must not hang the tick, since
@@ -178,7 +189,8 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
     }) + "\n"
 
     proc = None
-    ok = False
+    outcome = "final"
+    any_output = False
     try:
         proc = subprocess.Popen(
             cmd,
@@ -189,19 +201,21 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
 
         fd = proc.stdout.fileno()
         buf = b""
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
+        matched = False
         while True:
             newline_at = buf.find(b"\n")
             if newline_at == -1:
-                remaining = deadline - time.time()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    break
+                    break  # timed out waiting for the next byte
                 ready, _, _ = select.select([fd], [], [], remaining)
                 if not ready:
                     break  # timed out waiting for the next byte
                 chunk = os.read(fd, 4096)
                 if not chunk:
                     break  # gate closed the connection without answering
+                any_output = True
                 buf += chunk
                 continue
             line, buf = buf[:newline_at], buf[newline_at + 1:]
@@ -210,10 +224,25 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
             except ValueError:
                 continue
             if msg.get("id") == 1:
-                ok = "result" in msg and "error" not in msg
+                matched = True
+                if "result" in msg and "error" not in msg:
+                    outcome = "ok"
+                else:
+                    outcome = "final"
+                    error = msg.get("error")
+                    if isinstance(error, dict):
+                        data = error.get("data")
+                        if isinstance(data, dict) and data.get("retry_safe") is True:
+                            outcome = "retry"
                 break
+        if not matched:
+            # Broke out on a timeout or EOF, never on a matching response:
+            # if not a single byte ever came back, the connection itself
+            # failed (safe to retry); once output has started, a send may
+            # already be in flight, so treat that as unretryable.
+            outcome = "retry" if not any_output else "final"
     except Exception:
-        ok = False
+        outcome = "final"
     finally:
         if proc is not None:
             try:
@@ -233,7 +262,7 @@ def gate_send(ssh_key, known_hosts, target, handle, text, timeout=60):
                 proc.stdout.close()
             except Exception:
                 pass
-    return ok
+    return outcome
 
 
 def hook_agent(base_url, token, payload):

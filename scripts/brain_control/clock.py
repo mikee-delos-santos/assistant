@@ -15,8 +15,9 @@ propagated.
 import hashlib
 import json
 import os
+import time
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Set
+from typing import Callable, Dict, Optional, Set
 
 from . import schedule
 
@@ -89,11 +90,29 @@ def _next_backoff_iso(now: datetime, n: int) -> str:
     return schedule.to_iso_utc(now + timedelta(minutes=BACKOFF_MINUTES[idx]))
 
 
+def _normalize_outcome(result):
+    """Map a sender's return value to "ok" / "retry" / "final".
+
+    Real senders return one of those three strings (ruling R10: an
+    unknown delivery outcome is never silently retried). Older fakes in
+    tests, and send_smart today, still return a plain bool; True/False
+    keep meaning "ok"/"retry" so those tests keep meaning what they did.
+    """
+    if result is True:
+        return "ok"
+    if result is False:
+        return "retry"
+    return result
+
+
 def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str],
-        send_text: Callable[[str, str], bool],
-        send_smart: Callable[[str, dict], bool],
+        send_text: Callable[[str, str], object],
+        send_smart: Callable[[str, dict], object],
         notify_mark: Callable[[str], bool],
-        log: Callable[[str, str], None]) -> None:
+        log: Callable[[str, str], None],
+        checkpoint: Optional[Callable[[], None]] = None,
+        time_budget_s: float = 90.0,
+        monotonic: Callable[[], float] = time.monotonic) -> None:
     if not os.path.isdir(reminders_dir):
         return
 
@@ -118,13 +137,27 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
     def record_attempt():
         counters["tick"] += 1
         sent_today["count"] += 1
+        if checkpoint is not None:
+            checkpoint()
+
+    start_mono = monotonic()
+
+    def budget_used_up():
+        return monotonic() - start_mono >= time_budget_s
 
     skipped_names = []
     failed_names = []
+    invalid_names = []
 
     filenames = sorted(f for f in os.listdir(reminders_dir) if f.endswith(".json"))
 
     for filename in filenames:
+        if budget_used_up():
+            # Time is up for this tick: leave every remaining reminder file
+            # untouched so it is picked up fresh on the next tick, rather
+            # than starting new sends this tick has no time left to finish.
+            break
+
         file_id = filename[:-len(".json")]
         path = os.path.join(reminders_dir, filename)
 
@@ -138,6 +171,7 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
             if invalid_seen.get(filename) != marker:
                 invalid_seen[filename] = marker
                 log("invalid", filename)
+                invalid_names.append(filename)
             continue
 
         try:
@@ -155,6 +189,7 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
             if invalid_seen.get(filename) != digest:
                 invalid_seen[filename] = digest
                 log("invalid", filename)
+                invalid_names.append(filename)
             continue
 
         rem_id = rem["id"]
@@ -170,10 +205,17 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
             log("error", "%s %s" % (rem_id, type(e).__name__))
             continue
 
+    # One report text at most for the whole run (never one per category),
+    # so Mark's phone gets at most one buzz per tick.
+    report_lines = []
     if skipped_names:
-        notify_mark("Skipped late reminders: " + ", ".join(skipped_names))
+        report_lines.append("Skipped late reminders: " + ", ".join(skipped_names))
     if failed_names:
-        notify_mark("Failed reminders: " + ", ".join(failed_names))
+        report_lines.append("Failed reminders: " + ", ".join(failed_names))
+    if invalid_names:
+        report_lines.append("Invalid reminders: " + ", ".join(invalid_names))
+    if report_lines:
+        notify_mark("\n".join(report_lines))
 
     _sweep_gone(last_done, partial, attempts, gone, filenames, now)
 
@@ -262,15 +304,26 @@ def _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
             break
 
         try:
-            ok = send_text(handle, text)
+            outcome = _normalize_outcome(send_text(handle, text))
         except Exception:
-            ok = False
+            outcome = "retry"
         record_attempt()
 
-        if ok:
+        if outcome == "ok":
             done_set.add(handle)
             done.append(handle)
             per_handle.pop(handle, None)
+        elif outcome == "final":
+            # The outcome is known to be unrecoverable, not merely
+            # unknown: give up on this handle now rather than spending
+            # the rest of the attempt budget on a send that will never
+            # succeed (ruling R10).
+            done_set.add(handle)
+            done.append(handle)
+            per_handle.pop(handle, None)
+            if not already_failed:
+                failed_names.append(rem["name"])
+                already_failed = True
         else:
             n = att["n"] + 1
             if n >= MAX_ATTEMPTS:
@@ -287,7 +340,7 @@ def _run_text(rem, rem_id, path, slot_iso, now, late, is_once, last_done,
         # process dying) never loses an attempt that already happened.
         partial[rem_id] = {"slot": slot_iso, "done": done}
 
-    if len(done_set) >= len(unique_to):
+    if set(unique_to) <= done_set:
         last_done[rem_id] = slot_iso
         partial.pop(rem_id, None)
         attempts.pop(rem_id, None)
@@ -321,12 +374,23 @@ def _run_smart(rem, rem_id, path, slot, slot_iso, now, late, is_once,
 
     payload = smart_payload(rem, slot, late)
     try:
-        ok = send_smart(lease, payload)
+        outcome = _normalize_outcome(send_smart(lease, payload))
     except Exception:
-        ok = False
+        outcome = "retry"
     record_attempt()
 
-    if ok:
+    if outcome == "ok":
+        last_done[rem_id] = slot_iso
+        partial.pop(rem_id, None)
+        attempts.pop(rem_id, None)
+        if is_once:
+            _delete(path, rem_id, log)
+        return
+
+    if outcome == "final":
+        # Known unrecoverable: stop now instead of burning the rest of
+        # the attempt budget on a send that will never succeed.
+        failed_names.append(rem["name"])
         last_done[rem_id] = slot_iso
         partial.pop(rem_id, None)
         attempts.pop(rem_id, None)

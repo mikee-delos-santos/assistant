@@ -179,3 +179,102 @@ class Clock(unittest.TestCase):
         # json.loads on this raises RecursionError, not ValueError/ReminderError.
         self.tick(self.SLOT + timedelta(seconds=20))
         self.assertEqual(len([l for l in self.logs if l[0] == "invalid"]), 1)
+
+    # --- Fix round 3 (R10: gate_send ok/retry/final outcomes) ---
+
+    def test_final_outcome_stops_after_one_attempt_and_reports_failed(self):
+        write(self.d)
+        self.text.ok = "final"
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len(self.text.calls), 1)
+        self.assertIn("r-a", self.st["last_done"])
+        self.assertNotIn("r-a", self.st["attempts"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
+        # Exactly one report text for the whole run (M3), with the name in it.
+        self.assertEqual(len(self.mark.calls), 1)
+        self.assertIn("Failed reminders: Trash", self.mark.calls[0][0])
+        # A later tick must not retry a handle marked final.
+        self.tick(self.SLOT + timedelta(minutes=5))
+        self.assertEqual(len(self.text.calls), 1)
+
+    def test_retry_outcome_backs_off_like_a_plain_failure(self):
+        write(self.d)
+        self.text.ok = "retry"
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len(self.text.calls), 1)
+        self.assertIn("r-a", self.st["attempts"])
+        too_soon = self.SLOT + timedelta(seconds=50)
+        self.tick(too_soon)
+        self.assertEqual(len(self.text.calls), 1)
+        self.tick(self.SLOT + timedelta(seconds=20, minutes=1))
+        self.assertEqual(len(self.text.calls), 2)
+
+    def test_ok_outcome_string_behaves_like_true(self):
+        write(self.d)
+        self.text.ok = "ok"
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertIn("r-a", self.st["last_done"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, "r-a.json")))
+
+    def test_smart_final_outcome_reports_failed_immediately(self):
+        write(self.d, kind="smart", text=None, prompt="List chores")
+        self.smart.ok = "final"
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len(self.smart.calls), 1)
+        self.assertIn("r-a", self.st["last_done"])
+        self.assertEqual(len(self.mark.calls), 1)
+        self.assertIn("Failed reminders: Trash", self.mark.calls[0][0])
+
+    # --- Fix round 3 (R11: invalid files reported to Mark) ---
+
+    def test_newly_invalid_file_reported_in_run_report(self):
+        with open(os.path.join(self.d, "r-bad.json"), "w") as f:
+            f.write("{nope")
+        self.tick(self.SLOT)
+        self.assertEqual(len(self.mark.calls), 1)
+        self.assertIn("Invalid reminders: r-bad.json", self.mark.calls[0][0])
+        # Not reported again once already logged (once-per-hash).
+        self.tick(self.SLOT + timedelta(seconds=30))
+        self.assertEqual(len(self.mark.calls), 1)
+
+    # --- Fix round 3 (M3: at most one text to Mark per run) ---
+
+    def test_skipped_failed_invalid_joined_into_one_notice(self):
+        with open(os.path.join(self.d, "r-bad.json"), "w") as f:
+            f.write("{nope")
+        write(self.d, id="r-skip", schedule={"type": "once", "at": "2026-09-16T08:00:00+08:00"},
+              name="Skipped One")
+        write(self.d, id="r-fail", name="Failed One", late_limit_minutes=300)
+        self.text.ok = "final"
+        self.tick(self.SLOT + timedelta(hours=3))
+        self.assertEqual(len(self.mark.calls), 1)
+        body = self.mark.calls[0][0]
+        self.assertIn("Skipped late reminders", body)
+        self.assertIn("Failed reminders", body)
+        self.assertIn("Invalid reminders", body)
+
+    # --- Fix round 3 (I3: checkpoint called after every send attempt) ---
+
+    def test_checkpoint_called_once_per_attempt(self):
+        write(self.d, to=["+639170000001", "+639170000002"])
+        checkpoints = []
+        clock.run(self.d, self.st, self.SLOT + timedelta(seconds=20), "pc", ALLOW,
+                   self.text, self.smart, self.mark, lambda e, x: self.logs.append((e, x)),
+                   checkpoint=lambda: checkpoints.append(1))
+        self.assertEqual(len(checkpoints), 2)
+
+    # --- Fix round 3 (I4: time budget) ---
+
+    def test_time_budget_stops_starting_new_sends(self):
+        write(self.d, id="r-1")
+        write(self.d, id="r-2")
+        times = [0.0]
+
+        def fake_monotonic():
+            times[0] += 50.0
+            return times[0]
+
+        clock.run(self.d, self.st, self.SLOT + timedelta(seconds=20), "pc", ALLOW,
+                   self.text, self.smart, self.mark, lambda e, x: self.logs.append((e, x)),
+                   time_budget_s=90.0, monotonic=fake_monotonic)
+        self.assertEqual(len(self.text.calls), 1)
