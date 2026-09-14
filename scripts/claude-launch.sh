@@ -45,16 +45,17 @@ ssh_gate() {
      || [ -z "${LAUNCH_SSH_TARGET:-}" ] || [ ! -r "$LAUNCH_SSH_KEY" ]; then
     fail "launch key is not set up on this brain; Mac sessions can only be launched when the brain has its launch key"
   fi
-  # The gate prints its own JSON. Exit 255 means ssh itself failed (for example the Mac
-  # does not accept this brain's key), so turn that into JSON too.
+  # The gate prints its own JSON on stdout. ssh's own messages go to stderr; drop them so
+  # the caller only ever sees JSON. Exit 255 means ssh itself failed: the key was refused,
+  # the Mac was unreachable, or the connection dropped after the gate already ran.
   if ssh -T -i "$LAUNCH_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
     -o UserKnownHostsFile="$LAUNCH_SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
-    -o ServerAliveInterval=30 -- "$LAUNCH_SSH_TARGET" "$1"; then
+    -o ServerAliveInterval=30 -- "$LAUNCH_SSH_TARGET" "$1" 2>/dev/null; then
     exit 0
   else
     rc=$?
   fi
-  [ "$rc" -ne 255 ] || fail "could not reach the Mac launch gate over ssh (key not accepted or Mac unreachable)"
+  [ "$rc" -ne 255 ] || fail "ssh to the Mac launch gate failed (key refused, Mac unreachable, or connection lost mid-call); do not retry a launch blindly, run claude-launch list first"
   exit "$rc"
 }
 

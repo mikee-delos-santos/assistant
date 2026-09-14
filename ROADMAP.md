@@ -122,7 +122,7 @@ Fail back (order matters: never two brains at once, and never a brain on stale m
 |---|---|---|---|
 | F1 | Mark (Mac) | Add the `mac-brain-launch` line by hand: `from="127.0.0.1,::1",restrict,command="/Users/mikee/.claude-launch/claude-launch-gate" ssh-ed25519 <mac-brain-launch public key> mac-brain-launch`. Do NOT use `scripts/install-launch-key.sh`: it requires the comment `brice-launch`, hard-codes the PC IP, and deletes every ` brice-launch` line (the PC's launch key). Mac Claude then tests `claude-launch list` from the Mac brain | TODO |
 | F2 | Mac | `docker compose stop openclaw` on the Mac; confirm it is stopped. Only then tell Mark to turn on the PC | TODO |
-| F3 | Mark | Turn the PC on AND log in right away. The PC brain auto-starts at boot (`restart: unless-stopped`), but PC Syncthing starts only at login | TODO |
+| F3 | Mark | Turn the PC on AND log in right away. The PC brain auto-starts as soon as Docker Desktop starts (`restart: unless-stopped`). PC Syncthing starts at login. Not checked: whether Docker Desktop on the PC starts at boot or at login. Either way the two race | TODO |
 | F4 | PC | Right after login: `docker compose stop openclaw`, so the PC brain does not answer or write memory on stale files | TODO |
 | F5 | PC | Wait until Syncthing shows the workspace folder "Up to Date" with the Mac. Check there are no `*sync-conflict*` files. The Mac changed USER.md, TOOLS.md, CLAUDE-SESSIONS.md, and the launch skill. If a conflict file exists, stop and tell Mark | TODO |
 | F6 | PC | `git pull`; add `BRAIN_HOST=pc` to the PC `.env`; `docker compose up -d --build --force-recreate openclaw` (new wrapper in the image) | TODO |
@@ -131,7 +131,7 @@ Fail back (order matters: never two brains at once, and never a brain on stale m
 | F9 | PC | Taildrop `CHORES_MCP_TOKEN` to the Mac (an env line in a file, delete the copy after) | TODO |
 | F10 | PC | Turn on Syncthing Staggered File Versioning for folder `openclaw-workspace` (GUI: Edit folder > File Versioning > Staggered, Maximum Age 365 days). Set the Versions Path OUTSIDE the workspace: `<PC repo>\\data\\stversions-openclaw-workspace` (create it first). Reason: the default `.stversions` sits inside the workspace, and OpenClaw could index old memory copies as current. The Mac is already set (2026-09-15, path `data/stversions-openclaw-workspace` in the Mac repo) | TODO |
 
-Known gap: between boot (F3) and F4 the PC brain runs on the old files. A text in that
+Known gap: between Docker Desktop starting (F3) and F4, the PC brain runs on the old files. A text in that
 window can get a stale answer or create a conflict file. Keep the window short.
 
 Open decision for Mark: automatic failover (see "Proposal: automatic failover" below).

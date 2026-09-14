@@ -91,7 +91,8 @@ Tested for real on 2026-09-15. What was built on the Mac (image, key volumes, ga
 OpenClaw config) is described in ROADMAP.md "Handoff: Mac brain failover drill". That
 section also lists what was still open (Chores token, launch key line). Once those rows
 are done, a failover is: confirm the PC brain is stopped, then `docker compose up -d` on
-the Mac. Steps 2 and 3 below are the from-scratch version and are already done on this Mac.
+the Mac. Step 3 below (wrapper, key, cliPath) is the from-scratch version and is already done
+on this Mac.
 
 1. Confirm the PC gateway is actually stopped (avoid two brains).
 2. `cd ~/workspace/assistant && docker compose up -d`
@@ -110,8 +111,10 @@ the Mac. Steps 2 and 3 below are the from-scratch version and are already done o
    send risk as the PC (see ROADMAP.md).
 4. Reach it over Tailscale (Control UI / `tailscale serve`) or
    `docker exec -it openclaw openclaw chat`.
-5. When the PC returns: `docker compose stop openclaw` on the Mac, let Syncthing
-   reconcile, then start the PC brain again.
+5. When the PC returns, follow the fail back rows F1-F10 in ROADMAP.md "Handoff: Mac brain
+   failover drill". Short version: stop the Mac brain BEFORE the PC turns on. The PC brain
+   starts by itself with Docker Desktop, so stop it right after login, wait until Syncthing
+   is up to date, then start it again.
 
 ## 10. Prefer waking the PC over failing over (AS-33)  [CLI]  (DEFERRED 2026-09-13, not set up)
 For short PC outages, wake it instead of promoting the Mac: `scripts/wake-pc.sh`
