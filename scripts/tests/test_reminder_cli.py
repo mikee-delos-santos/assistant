@@ -1,4 +1,4 @@
-import io, json, os, tempfile, unittest
+import io, json, os, stat, tempfile, unittest
 from datetime import datetime, timezone
 import importlib.util
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +29,7 @@ class CLI(unittest.TestCase):
     def test_not_allowlisted(self):
         code, r = self.run_cli("add-text", "--to", "+15550000000", "--text", "x", "--name", "x", "--daily", "08:00")
         self.assertEqual(code, 1); self.assertIn("allow", r["error"])
+        self.assertNotIn("+15550000000", r["error"])
     def test_usage_error_is_json(self):
         code, r = self.run_cli("add-text", "--text", "x")
         self.assertEqual(code, 2); self.assertFalse(r["ok"])
@@ -37,6 +38,22 @@ class CLI(unittest.TestCase):
         self.assertEqual(self.run_cli("cancel", r["id"])[0], 0)
         self.assertEqual(self.run_cli("cancel", r["id"])[0], 1)
         self.assertEqual(self.run_cli("cancel", "../../etc/passwd")[0], 1)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                      "root ignores directory permission bits")
+    def test_add_write_failure_is_json(self):
+        rem_dir = self.env["REMINDERS_DIR"]
+        os.makedirs(rem_dir)
+        os.chmod(rem_dir, stat.S_IREAD | stat.S_IEXEC)
+        try:
+            code, r = self.run_cli("add-text", "--to", "+639170000001", "--text", "x",
+                                    "--name", "x", "--daily", "08:00")
+        finally:
+            os.chmod(rem_dir, stat.S_IRWXU)
+        self.assertEqual(code, 1)
+        self.assertFalse(r["ok"])
+        self.assertIn("could not write reminder", r["error"])
+        self.assertNotIn(rem_dir, r["error"])
 
 if __name__ == "__main__":
     unittest.main()

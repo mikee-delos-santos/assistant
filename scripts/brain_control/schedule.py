@@ -172,7 +172,7 @@ def validate(data: Dict, allow: Optional[Set[str]] = None, file_id: Optional[str
     normalized_to = [normalize_handle(h) for h in to]
     if allow is not None:
         for h in normalized_to:
-            _require(h in allow, "recipient %r is not in the allowlist" % (h,))
+            _require(h in allow, "a recipient is not in the allowlist")
 
     text = data.get("text")
     prompt = data.get("prompt")

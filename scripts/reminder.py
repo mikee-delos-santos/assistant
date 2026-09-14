@@ -167,9 +167,13 @@ def _do_add(kind, args, env, now, out):
     tmp_path = os.path.join(reminders_tmp, rem_id + ".json.tmp-" + secrets.token_hex(4))
     final_path = os.path.join(reminders_dir, rem_id + ".json")
     try:
-        with open(tmp_path, "w") as f:
-            json.dump(normalized, f)
-        os.replace(tmp_path, final_path)
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(normalized, f)
+            os.replace(tmp_path, final_path)
+        except OSError as exc:
+            _print_error(out, "could not write reminder: %s" % (exc.strerror or exc,))
+            return 1
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
