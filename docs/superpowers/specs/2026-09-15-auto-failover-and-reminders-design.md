@@ -31,7 +31,7 @@ Mac (always on)
 |     1. failover step   -> ~/.imsg-bridge/active-brain  (lease: pc | mac)    |
 |                        -> docker compose up/stop (Mac brain)                |
 |     2. reminder step   -> reads workspace/reminders/*.json (synced)         |
-|                        -> text:  runs the gate locally with --brain clock   |
+|                        -> text:  ssh 127.0.0.1 (clock key) -> gate --brain clock |
 |                        -> smart: POST /hooks/agent on the lease holder      |
 |   state: ~/.brain-control/state.json   (Mac only, never synced)             |
 |                                                                             |
@@ -188,9 +188,12 @@ For each valid file:
 2. No such slot -> nothing to do.
 3. `now - slot > late_limit` -> mark done as `skipped`, add to the skipped report.
 4. Otherwise send:
-   - `text`: for each recipient, run the gate locally:
-     `SSH_ORIGINAL_COMMAND="imsg rpc"` and `imsg-ssh-gate --brain clock`, write one JSON-RPC
-     `send` request (`chat_identifier` = handle, `text`), read one response. If more than
+   - `text`: for each recipient, `ssh` to `mikee@127.0.0.1` with the clock key
+     (`~/.brain-control/clock_ed25519`), command `/opt/homebrew/bin/imsg rpc`. The key's
+     `authorized_keys` line is `from="127.0.0.1,::1",restrict,command="<gate> --brain clock"`.
+     Write one JSON-RPC `send` request (`chat_identifier` = handle, `text`), read one response.
+     Why SSH and not a direct subprocess: only `sshd` has Full Disk Access (chat.db) and the
+     Messages Automation permission today. A launchd Python process would need new TCC grants. If more than
      2 minutes late, the text starts with `(late) `.
    - `smart`: `POST <lease holder>/hooks/agent` with `message` = the prompt plus a short
      header (job name, scheduled time, "send the result to <handle> on iMessage"),
@@ -262,7 +265,8 @@ Log: `~/.brain-control/brain-control.log`, one line per event, never message tex
 
 1. Code, tests, reviews, PR.
 2. Install on the Mac: gate (backward compatible), brain-control with mode `off`.
-3. Mark edits `authorized_keys` to add `--brain pc` / `--brain mac` (the tool cannot edit that file).
+3. Mark edits `authorized_keys`: add `--brain pc` / `--brain mac` to the brain lines and add the
+   clock key line (the tool cannot edit that file).
 4. Configure hooks and memory limit on the Mac brain; PC Claude does the PC side.
 5. Set mode `auto`. Run the drill.
 6. Migrate PC cron reminders when the PC is on.
