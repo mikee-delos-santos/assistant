@@ -115,16 +115,30 @@ def _clean_lease(raw):
     return value if value in ("pc", "mac") else "pc"
 
 
+def _outcome_delivered(result):
+    """Whether a gate_send-shaped result counts as delivered.
+
+    gate_send returns "ok"/"retry"/"final"; older fakes still return a
+    plain bool. Anything that is not clearly "ok" (or True) counts as
+    not delivered - a notice is fire-and-forget, so there is no retry
+    here, only a log entry, and never the notice text itself.
+    """
+    return result is True or result == "ok"
+
+
 def _send_notice(io, cfg, mark_handle, text, log_path):
     if not mark_handle:
         # No Mark handle configured: the caller already logged
         # "config_missing mark_handle" once for this tick, so nothing
         # more to log here, never the notice text itself.
         return False
-    return io.gate_send(
+    result = io.gate_send(
         cfg["clock_ssh_key"], cfg["clock_known_hosts"], cfg["clock_ssh_target"],
         mark_handle, text,
     )
+    if not _outcome_delivered(result):
+        _log(log_path, "notice_undelivered", "")
+    return result
 
 
 def _gate_is_unfenced(authorized_keys_path):

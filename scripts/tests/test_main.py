@@ -198,6 +198,31 @@ class Tick(unittest.TestCase):
         with open(self.cfg["lease_path"]) as f:
             self.assertEqual(f.read().strip(), "pc")
 
+    # --- Fix round 3 (notify_mark treats a non-"ok" gate_send result as
+    # not delivered: log only, never raise, never resend) ---
+
+    def test_notify_mark_logs_when_gate_send_is_not_ok(self):
+        write_reminder = {"version": 1, "id": "r-skip", "kind": "text", "name": "Old one",
+                           "to": ["+639170000001"], "text": "x", "prompt": None,
+                           "schedule": {"type": "once", "at": "2026-09-01T00:00:00Z"},
+                           "tz": "Asia/Manila", "late_limit_minutes": 120,
+                           "created_at": "2026-08-01T00:00:00Z", "created_by": "brice"}
+        with open(os.path.join(self.cfg["reminders_dir"], "r-skip.json"), "w") as f:
+            json.dump(write_reminder, f)
+
+        class Undelivered(FakeIO):
+            def gate_send(self, key, kh, target, handle, text, timeout=90):
+                self.sent.append((handle, text))
+                return "final"
+
+        self.io = Undelivered()
+        main.tick(self.cfg, now=datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc), io=self.io)
+        self.assertEqual(len(self.io.sent), 1)
+        lines = [l for l in self.log_lines() if "notice_undelivered" in l]
+        self.assertEqual(len(lines), 1)
+        # Never the notice text itself.
+        self.assertNotIn("Old one", lines[0])
+
     # --- Fix round 3 (M2: docker up failure gets its own notice text) ---
 
     def test_docker_up_failure_has_its_own_notice_text(self):
