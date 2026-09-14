@@ -66,9 +66,11 @@ Python must run on Mac `/usr/bin/python3` (3.9) and in the image (3.11). Standar
 - File `~/.imsg-bridge/active-brain`, content `pc` or `mac` plus newline.
 - Written atomically (temp file in the same folder, then `os.replace`).
 - Missing or unreadable file means `pc` (today's behavior).
-- Manual pin: `~/.brain-control/mode` with `auto` (default), `pc`, `mac`, or `off`.
-  `pc`/`mac` force the lease and the Mac brain state. `off` makes the tick do nothing for
-  failover (reminders still run).
+- Manual pin: `~/.brain-control/mode` with `auto`, `pc`, `mac`, or `off`. The default is
+  `off` until Mark sets it to `auto` (ruling R12): failover must never start moving the
+  lease and starting the Mac brain container on its own, before Mark has had a chance to
+  check the config. `pc`/`mac` force the lease and the Mac brain state. `off` makes the
+  tick do nothing for failover (reminders still run).
 
 ### 3.2 Health inputs
 
@@ -127,6 +129,16 @@ Why 5 ticks at 30 s: short restarts of the PC container (about 30-60 s) do not c
 
 Known window: two gate processes read the lease at slightly different moments during a
 flip. A message that arrives in that same instant can reach both brains. Accepted.
+
+Unfenced guard (ruling R13): a key line without `--brain` is unfenced by design for a
+safe rollout, but it also means the gate cannot tell a pc/mac connection from the clock's
+send-only one apart - failover must not run while that is true, or it could move the
+lease to a brain the gate is not actually fencing. So the tick checks `authorized_keys`
+itself before applying failover in mode `auto` or `mac`: if any non-comment line
+mentions `imsg-ssh-gate` without `--brain`, failover is paused for that tick (no lease
+move, no docker action, failover's own counters untouched) and Mark gets one notice
+about it per 24 hours, asking him to add `--brain pc` / `--brain mac` to the gate lines.
+A file that cannot be read is treated the same as an unfenced line (fail safe).
 
 ## 4. Reminders
 
@@ -195,6 +207,17 @@ For each valid file:
      Why SSH and not a direct subprocess: only `sshd` has Full Disk Access (chat.db) and the
      Messages Automation permission today. A launchd Python process would need new TCC grants. If more than
      2 minutes late, the text starts with `(late) `.
+
+     The send call returns one of three outcomes, never a plain success/failure guess
+     (ruling R10): `"ok"` (a matching response with a result and no error), `"retry"`
+     (the gate's error says `retry_safe: true`, or the ssh connection failed before any
+     byte came back at all), or `"final"` (every other failure - a plain error, a gate
+     rejection, or a timeout/EOF once some output had already started, since the send may
+     already be in flight by then). `"retry"` gets the usual per-recipient backoff and
+     6-attempt cap. `"final"` stops retrying that recipient right away: it counts as done
+     for completion purposes and the reminder's name goes on the Failed list this tick.
+     An outcome that is genuinely unknown is never treated as either success or a safe
+     retry.
    - `smart`: `POST <lease holder>/hooks/agent` with `message` = the prompt plus a short
      header (job name, scheduled time, "send the result to <handle> on iMessage"),
      `name` = the reminder name, `deliver: true`, `channel: "imessage"`, `to` = the handle,
@@ -203,11 +226,20 @@ For each valid file:
 5. Success -> `last_done[id] = slot`. For `once`, delete the file.
 6. Failure -> keep it; the next tick retries until the late limit is passed.
    Per-recipient partial success is recorded so a retry does not resend to people who got it.
-7. Invalid file -> log once per file content hash; never send.
+7. Invalid file -> log once per file content hash; never send. A file newly logged as
+   invalid this tick (ruling R11) is also listed in the tick's report to Mark, by file
+   name, so a bad reminder file does not go unnoticed.
 
 Safety limits in the clock (protect against a runaway brain writing many reminders):
 - At most 10 sends per tick, at most 60 sends per day in total.
-- Skipped report: one text to Mark per tick at most, listing names only.
+- At most one report text to Mark per tick, not one per category: the Skipped, Failed,
+  and Invalid lines (whichever are non-empty) are joined into a single message.
+- A time budget (default 90s) on how long one tick's send loop may run: once it is used
+  up, no new sends are started - whatever reminders are left over are picked up on the
+  next tick. Notices (Skipped/Failed/Invalid) are still sent for what was already
+  processed.
+- After every send attempt, the tick's state is checkpointed to disk, so a crash
+  mid-tick loses at most the attempt in progress, never an earlier one.
 
 State file `~/.brain-control/state.json` (Mac only):
 `{"lease_streaks": {...}, "last_done": {"<id>": "<slot ISO>"}, "partial": {...},

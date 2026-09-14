@@ -51,8 +51,8 @@ def _ensure(st):
 def step(inp, st):
     # type: (Inputs, Dict) -> Actions
 
-    # Manual pin to PC: leave st untouched so a paused (off) run keeps its
-    # counters exactly as they were.
+    # Mode off, or an unrecognized mode: leave st untouched so a paused
+    # run keeps its counters exactly as they were.
     if inp.mode not in MODES or inp.mode == "off":
         return Actions()
 

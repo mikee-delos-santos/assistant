@@ -201,7 +201,7 @@ class Wiring(unittest.TestCase):
     def test_send_rejected_when_not_lease_holder(self):
         lines, _ = self.run_gate("pc", "mac", [
             {"jsonrpc": "2.0", "id": 1, "method": "send",
-             "params": {"to": "+639171234567", "text": "hi"}}])
+             "params": {"to": "+639170000003", "text": "hi"}}])
         self.assertEqual(len(lines), 1)
         self.assertIn("error", lines[0])
         self.assertIn("not the active brain", lines[0]["error"]["message"])

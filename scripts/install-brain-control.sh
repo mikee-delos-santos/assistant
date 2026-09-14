@@ -21,7 +21,17 @@ mkdir -p "${PKG_DIR}"
 chmod 700 "${BC_DIR}"
 
 echo "==> Step 2: copying brain_control package"
-cp "${SCRIPT_DIR}/brain_control/"*.py "${PKG_DIR}/"
+# The launchd job reads these files every 30 seconds, including while a
+# re-run of this installer is copying them; cp straight onto the target
+# name could hand it a half-written file mid-copy. Write to a .new path
+# and mv -f into place, which is atomic on the same filesystem.
+for src in "${SCRIPT_DIR}/brain_control/"*.py; do
+  base="$(basename "${src}")"
+  dest="${PKG_DIR}/${base}"
+  cp "${src}" "${dest}.new"
+  chmod 644 "${dest}.new"
+  mv -f "${dest}.new" "${dest}"
+done
 
 CONFIG_PATH="${BC_DIR}/config.json"
 if [ ! -f "${CONFIG_PATH}" ]; then
@@ -104,8 +114,9 @@ if [ -f "${GATE_PATH}" ]; then
   cp "${GATE_PATH}" "${BACKUP_PATH}"
   echo "    backed up existing gate to ${BACKUP_PATH}"
 fi
-cp "${SCRIPT_DIR}/imsg-ssh-gate.py" "${GATE_PATH}"
-chmod 755 "${GATE_PATH}"
+cp "${SCRIPT_DIR}/imsg-ssh-gate.py" "${GATE_PATH}.new"
+chmod 755 "${GATE_PATH}.new"
+mv -f "${GATE_PATH}.new" "${GATE_PATH}"
 
 echo "==> Step 5: installing the launchd job"
 mkdir -p "${LAUNCH_AGENTS_DIR}"
