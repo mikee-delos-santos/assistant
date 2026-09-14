@@ -51,7 +51,7 @@ Now (2026-09-14)
 | # | Who | Task | Notes |
 |---|---|---|---|
 | N8 | Mark + PC | SMS failsafe: SMS2 (allowFrom format check) and SMS5 if needed | Gate change live; SMS test passed on the Mac side 2026-09-14 |
-| N9 | Mark + PC | Model fallbacks (M0-M7) | Needs Mark's approval (M0) and a new OpenAI API key (M3) |
+| N9 | Mark + PC | Model fallbacks (M1-M7) | M0 approved 2026-09-14; M3 (OpenAI API key) is with Mark; M1/M2 can start now |
 
 PC Claude cleanups
 | # | Who | Task | Notes |
@@ -221,7 +221,7 @@ Mac Claude status (2026-09-14): GATE CHANGE DONE AND INSTALLED.
 |---|---|---|---|
 | SMS1 | Mark | Keep Text Message Forwarding on for the Mac on the assistant iPhone, and keep that iPhone powered and online (SMS in and out go through it) | DONE (inbound SMS seen 2026-09-14) |
 | SMS2 | PC | `git pull`. No OpenClaw config change is expected. Check that `channels.imessage.allowFrom` holds the family numbers in `+63...` form (same form as the SMS handles). Do not print them | TODO |
-| SMS3 | Mark + PC | Test: Mark turns iMessage OFF on his iPhone (Settings > Apps > Messages > iMessage), texts the assistant number (green bubble), expects a GREEN reply, then turns iMessage back ON | DONE on the Mac side 2026-09-14 17:50 - SMS in, SMS reply sent (is_sent=1, error 0); Mark to confirm the green reply arrived |
+| SMS3 | Mark + PC | Test: Mark turns iMessage OFF on his iPhone (Settings > Apps > Messages > iMessage), texts the assistant number (green bubble), expects a GREEN reply, then turns iMessage back ON | DONE 2026-09-14 17:50 - SMS in, SMS reply sent; Mark confirmed the green reply arrived |
 | SMS4 | Mac | During SMS3, read `~/.imsg-bridge/gate.log` and chat.db: the reply row must be service SMS with no error | DONE 2026-09-14 - gate log `direct-send ok (1:1, SMS, ...)`, reply row service SMS, no error |
 | SMS5 | PC | If OpenClaw logs a send error during SMS3, copy only the error text into this table (no numbers, no message text) | TODO |
 
@@ -270,10 +270,10 @@ NOT used    any subscription login, Gemini (tool-call bug + under-18 terms), Mis
 
 | # | Who | Step | Status |
 |---|---|---|---|
-| M0 | Mark | Approve the chain above (or change it). Codex/ChatGPT subscription login stays OFF unless Mark accepts the gray-area risk in writing here | TODO |
+| M0 | Mark | Approve the chain above (or change it). Codex/ChatGPT subscription login stays OFF unless Mark accepts the gray-area risk in writing here | DONE 2026-09-14 - Mark approved the recommended chain as written (no subscription logins) |
 | M1 | PC | `git pull`. Run `openclaw models status` and `openclaw models list --provider anthropic` and `--provider openai`. Record here: the exact ids for Sonnet 5, Haiku 4.5, GPT-5-mini, and the OpenClaw version. Check claude.com/pricing and developers.openai.com/api/docs/pricing and record the current prices | TODO |
 | M2 | PC | In the installed OpenClaw version, check whether issues #57760 (rate-limit failover) and #65760 (fallback retry prompt) are fixed. Record the result | TODO |
-| M3 | Mark | Create an OpenAI API key on platform.openai.com with a hard monthly budget (for example $10). Put it in the PC `.env` as `OPENAI_API_KEY` yourself (never in chat, never in git) | TODO |
+| M3 | Mark | Create an OpenAI API key on platform.openai.com: prepaid credits with auto-recharge OFF (the credit balance is the hard cap), a project just for the assistant, a key in that project. Put it in the PC `.env` as `OPENAI_API_KEY` yourself (never in chat, never in git). A ChatGPT subscription does NOT include API credits | TODO |
 | M4 | PC | Recreate the container so it reads the new `.env`: `docker compose up -d --force-recreate openclaw`. Then set the chain with the CLI (primary, then clear and add fallbacks in order). Do NOT use any subscription or OAuth login | TODO |
 | M5 | PC | `openclaw models status --probe`: both providers must be healthy. Record the result (no keys) | TODO |
 | M6 | PC + Mark | Fallback test without breaking Claude: in a PC chat session, `/model openai/gpt-5-mini -s`, ask one question that uses a tool (for example list chores), then switch back. Then Mark texts the assistant once to confirm iMessage replies still use Claude | TODO |
