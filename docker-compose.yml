@@ -17,6 +17,9 @@ services:
     image: assistant/openclaw:with-ssh
     container_name: openclaw
     restart: unless-stopped
+    # Cap memory so a runaway brain process can't starve the other stacks
+    # the Mac Docker VM also runs. Override with OPENCLAW_MEM_LIMIT if needed.
+    mem_limit: ${OPENCLAW_MEM_LIMIT:-3g}
     env_file:
       - .env
     ports:

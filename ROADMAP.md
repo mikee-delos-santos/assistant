@@ -134,65 +134,44 @@ Fail back (order matters: never two brains at once, and never a brain on stale m
 Known gap: between Docker Desktop starting (F3) and F4, the PC brain runs on the old files. A text in that
 window can get a stale answer or create a conflict file. Keep the window short.
 
-Open decision for Mark: automatic failover (see "Proposal: automatic failover" below).
+Automatic failover was built afterwards: see "Handoff: automatic failover + shared reminders".
 
-## Proposal: automatic failover (2026-09-15, not decided)
+## Handoff: automatic failover + shared reminders (2026-09-15, BUILT, rollout in progress)
 
-Today failover is manual. The danger of automating it is split brain: two brains watch the
-same iMessage account, both reply to every text, and both write memory.
+Design: `docs/superpowers/specs/2026-09-15-auto-failover-and-reminders-design.md`.
+Plan: `docs/superpowers/plans/2026-09-15-auto-failover-and-reminders.md`.
 
-Key fact: every brain reaches iMessage through the gate on the Mac. So the Mac can decide
-who is allowed to talk. No second brain can talk around it.
+What it is:
+- One launchd job on the Mac (`com.assistant.brain-control`, every 30 s, `scripts/brain_control/`).
+  - Failover: it writes the lease `~/.imsg-bridge/active-brain` (`pc` or `mac`). It starts the
+    Mac brain after the PC brain fails 5 health checks, and fails back after 3 good checks once
+    Syncthing shows the PC is in sync.
+  - Reminders: it reads `workspace/reminders/<id>.json` and sends due ones. Fixed text goes
+    through the gate (`--brain clock`, over ssh to 127.0.0.1). Smart jobs go to `/hooks/agent`
+    on the brain that holds the lease.
+- The gate (`scripts/imsg-ssh-gate.py`) takes `--brain pc|mac|clock`. A brain without the lease
+  still connects, but gets no incoming messages and cannot send.
+- Brice creates reminders with `reminder add-text|add-smart|list|cancel` (in the image). TOOLS.md
+  and the `reminders` skill tell Brice never to use the built-in `cron` tool for reminders.
+- Failover pauses by itself while any gate line in `authorized_keys` has no `--brain`.
+- Mode file `~/.brain-control/mode`: `off` (installer default), `auto`, `pc`, or `mac`.
 
-Design (all on the Mac):
-1. Watchdog: a launchd job on the Mac runs every 60s.
-2. Lease file: `~/.imsg-bridge/active-brain` holds `pc` or `mac`. Only the watchdog writes it.
-3. Fencing in the gate: each brain key's forced command gets `--brain pc` or `--brain mac`.
-   The gate denies `watch.subscribe` and `send` to the brain that does not hold the lease.
-   A brain without the lease is deaf and mute, even if it is running.
-4. State machine:
+Rollout
+| # | Who | Step | Status |
+|---|---|---|---|
+| R1 | Mark (Mac) | `bash scripts/install-brain-control.sh` (installs the gate, the tick, the clock key, a hooks token; mode stays `off`) | TODO |
+| R2 | Mark (Mac) | Edit `~/.ssh/authorized_keys`: add `--brain pc` to the PC imsg line, `--brain mac` to the `mac-brain-imsg` line, and add the clock line the installer prints | TODO |
+| R3 | Mac | Mac `.env`: `MARK_IMESSAGE_HANDLE`, `OPENCLAW_HOOKS_TOKEN` (same value as `~/.brain-control/hooks-token`). Mac brain config: `hooks.enabled=true`, `hooks.path=/hooks`, `hooks.token=${OPENCLAW_HOOKS_TOKEN}`, `hooks.allowedAgentIds=["main"]`, `hooks.allowRequestSessionKey=false`. Rebuild the image | TODO |
+| R4 | Mac | Set mode `auto`. With the PC off, the Mac brain should start after about 2.5 min. Test a text reminder and a smart reminder | TODO |
+| R5 | Mac | Move the pending PC reminder "Merge the reports 2022 fix" (Thu Sept 17, 12:00 AM Manila) into a smart reminder file | TODO |
+| R6 | PC | `git pull`; get the hooks token from the Mac over Taildrop into the PC `.env` as `OPENCLAW_HOOKS_TOKEN`; set the same `hooks.*` config; `docker compose up -d --build --force-recreate openclaw` | TODO |
+| R7 | PC | FIRST thing after the PC brain is up: `openclaw cron list`. Remove the "Merge the reports 2022 fix" job (it now lives in reminders) and the failed Sept 15 anniversary job (it targeted a wrong number ending 8700; Kath's number ends 8400). Recreate any other pending job with `reminder add-*`, then remove it from cron. Record the names (no handles) here | TODO |
+| R8 | Mark + PC | Fail back drill: with mode `auto`, turn on the PC and log in. The lease should move to `pc` once Syncthing is in sync, and the Mac brain should stop | TODO |
 
-```
-            PC healthy 3 checks in a row
-            AND Syncthing says the PC needs 0 items
-     +------------------------------------------------+
-     |                                                |
-     v                                                |
- [PC_ACTIVE]                                     [MAC_ACTIVE]
- lease=pc                                        lease=mac
- Mac brain stopped                               Mac brain running
-     |                                                ^
-     |  PC brain unhealthy 5 checks in a row (~5 min) |
-     +------------------------------------------------+
-        watchdog: lease=mac, then start Mac brain
-
- Fail back order: stop Mac brain -> wait for Syncthing -> lease=pc
-```
-
-5. Health check = the PC gateway answers over the tailnet (not only "the PC is on").
-6. Optional: the watchdog texts Mark once on each switch ("Brice moved to the Mac").
-
-Cases:
-- PC boots while the Mac brain runs: the PC brain starts but has no lease, so it cannot hear
-  or send texts. The lease moves to the PC only after Syncthing shows the PC is in sync.
-  This also fixes the stale-memory window from the manual fail back.
-- The Mac cannot reach the PC but the PC is fine (tailnet problem): the Mac takes the lease.
-  The PC brain is fenced at the gate, so there is still only one voice.
-- The Mac is off: no iMessage at all, for either brain. Failover does not help that case.
-- Flapping: the 5-check and 3-check rules stop fast back-and-forth switching.
-
-Not planned, and why:
-- A cloud cron outside our machines: the lease must sit next to the gate. A cloud job adds a new
-  thing that can control the gate.
-- Watchdogs on both machines that both decide: two deciders can both pick themselves.
-
-Known gaps:
-- A fenced PC brain can still write memory from heartbeat or cron jobs (not from texts).
-- Cron reminders live only on the host where they were made. They need their own design.
-- Wake-on-LAN (row "Wake-on-LAN (Mac wakes PC)") is still deferred.
-
-Work needed: gate change (security code, needs review), watchdog script, launchd plist, and a
-drill. About half a day with review.
+Known limits:
+- Cron jobs made before this change live only in the PC database until R7.
+- The Mac is still a single point of failure for iMessage.
+- A gate that dies after Messages sent a text but before it answered can cause one resend.
 
 ## Handoff: Brice-launched remote Claude Code sessions (2026-09-13)
 
