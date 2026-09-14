@@ -23,15 +23,16 @@ argv mode cannot be filtered or guarded, so it allows only `status`.
 The gate never starts a shell. Denials are logged with the method or subcommand
 name only, never message text, so the allowlist can be tuned from the log.
 
-Fencing: the forced command may carry `--brain pc` or `--brain mac`, telling the gate
-which brain this connection is for. A lease file (~/.imsg-bridge/active-brain) names the
-brain that currently holds iMessage. The gate reads the lease on every check, never
-caches it, and applies it two ways: a brain that is not the lease holder gets no incoming
-message notifications (its connection stays open, but message events are dropped) and
-its "send" calls are rejected. A third role, "clock", may only call "send"; it never
-receives notifications and every other method is rejected for it. A connection started
-without --brain (the role is None) is unfenced, for compatibility with any caller that
-predates this feature.
+Fencing: the forced command may carry `--brain pc`, `--brain mac`, or `--brain clock`,
+telling the gate which role this connection is for. A lease file
+(~/.imsg-bridge/active-brain) names the brain (pc or mac) that currently holds
+iMessage. The gate reads the lease on every check, never caches it, and applies it two
+ways: a brain that is not the lease holder gets no "message" notifications (its
+connection stays open, but "message" events are dropped; every other notification
+method is unaffected by fencing) and its "send" calls are rejected. The "clock" role
+may only call "send"; it never receives notifications and every other method is
+rejected for it. A connection started without --brain (the role is None) is unfenced,
+for compatibility with any caller that predates this feature.
 """
 import calendar
 import json
@@ -105,14 +106,14 @@ def deny(reason):
 
 def parse_role(argv_tail):
     # type: (List[str]) -> Optional[str]
-    """Which brain this connection is for, from the gate's own argv (not SSH_ORIGINAL_COMMAND).
+    """Which role this connection is for, from the gate's own argv (not SSH_ORIGINAL_COMMAND).
 
-    [] -> None (legacy, unfenced). ["--brain", "pc"|"mac"] -> that brain. Anything else is
-    a misconfigured forced command, so it is denied rather than silently unfenced.
+    [] -> None (legacy, unfenced). ["--brain", "pc"|"mac"|"clock"] -> that role. Anything
+    else is a misconfigured forced command, so it is denied rather than silently unfenced.
     """
     if not argv_tail:
         return None
-    if len(argv_tail) == 2 and argv_tail[0] == "--brain" and argv_tail[1] in BRAINS:
+    if len(argv_tail) == 2 and argv_tail[0] == "--brain" and argv_tail[1] in ROLES:
         return argv_tail[1]
     deny("bad --brain argument in forced command")
 
@@ -585,7 +586,57 @@ def parse_request(raw):
                       parse_constant=reject_constant)
 
 
-def run_rpc(args, role=None):
+def filter_line(line, visibility, role, lease_path=LEASE, fence_state=None):
+    """Filter one newline-framed JSON line read from imsg's stdout.
+
+    Responses go through the visibility filter unconditionally. A notification whose
+    method is "message" is fenced first: if `role` does not currently hold the lease
+    (per `lease_path`), it is dropped before the visibility filter ever sees it. Every
+    other notification method is not fenced here; it still goes through the visibility
+    filter's own generic content check, unchanged from before fencing existed.
+
+    fence_state, when given, is a dict this function mutates to remember the last time
+    it logged a "fence" drop (key "last"), so a role that is fenced out of a busy
+    connection gets at most one "fence" log line per FENCE_LOG_INTERVAL seconds instead
+    of one per dropped notification.
+    """
+    try:
+        message = json.loads(line.decode("utf-8"))
+    except ValueError:
+        log("hide", "non-JSON line from imsg")
+        return None
+    if not isinstance(message, dict):
+        log("hide", "non-object line from imsg")
+        return None
+    response_id = message.get("id")
+    is_response = "method" not in message
+    try:
+        if is_response:
+            message = visibility.filter_response(message)
+        else:
+            if message.get("method") == "message" and not may_receive(role, lease_path):
+                if fence_state is None:
+                    fence_state = {}
+                now = time.time()
+                if now - fence_state.get("last", 0.0) >= FENCE_LOG_INTERVAL:
+                    fence_state["last"] = now
+                    log("fence", "dropped notification %s for %s" % (
+                        short(message.get("method")), role))
+                return None
+            message = visibility.filter_notification(message)
+            if message is None:
+                return None
+        return (json.dumps(message, separators=(",", ":")) + "\n").encode()
+    except Exception as err:
+        log("hide", "filter error: %s" % short("%s: %s" % (type(err).__name__, err)))
+        if not is_response:
+            return None
+        error = {"jsonrpc": "2.0", "id": response_id,
+                 "error": {"code": -32000, "message": "imsg-ssh-gate: result hidden"}}
+        return (json.dumps(error) + "\n").encode()
+
+
+def run_rpc(args, role=None, lease_path=LEASE):
     if args in (["--help"], ["-h"]):
         # OpenClaw may probe `imsg rpc --help`. It prints usage text only, no data.
         os.execv(IMSG, [IMSG, "rpc", "--help"])
@@ -594,7 +645,7 @@ def run_rpc(args, role=None):
     child = subprocess.Popen([IMSG, "rpc"] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     out = sys.stdout.buffer
     out_lock = threading.Lock()
-    last_fence_log = [0.0]  # mutable cell: last time a "fence" line was logged
+    fence_state = {}  # mutated by filter_line to rate-limit "fence" log lines
 
     def finish(code):
         try:
@@ -608,44 +659,10 @@ def run_rpc(args, role=None):
             out.write(data)
             out.flush()
 
-    def filter_line(line):
-        try:
-            message = json.loads(line.decode("utf-8"))
-        except ValueError:
-            log("hide", "non-JSON line from imsg")
-            return None
-        if not isinstance(message, dict):
-            log("hide", "non-object line from imsg")
-            return None
-        response_id = message.get("id")
-        is_response = "method" not in message
-        try:
-            if is_response:
-                message = visibility.filter_response(message)
-            else:
-                if not may_receive(role):
-                    now = time.time()
-                    if now - last_fence_log[0] >= FENCE_LOG_INTERVAL:
-                        last_fence_log[0] = now
-                        log("fence", "dropped notification %s for %s" % (
-                            short(message.get("method")), role))
-                    return None
-                message = visibility.filter_notification(message)
-                if message is None:
-                    return None
-            return (json.dumps(message, separators=(",", ":")) + "\n").encode()
-        except Exception as err:
-            log("hide", "filter error: %s" % short("%s: %s" % (type(err).__name__, err)))
-            if not is_response:
-                return None
-            error = {"jsonrpc": "2.0", "id": response_id,
-                     "error": {"code": -32000, "message": "imsg-ssh-gate: result hidden"}}
-            return (json.dumps(error) + "\n").encode()
-
     def pump_child_output():
         try:
             for line in iter(child.stdout.readline, b""):
-                filtered = filter_line(line)
+                filtered = filter_line(line, visibility, role, lease_path, fence_state)
                 if filtered is not None:
                     write_line(filtered)
         except OSError:
@@ -698,7 +715,7 @@ def run_rpc(args, role=None):
             if bad_key:
                 reject(request_id, "file or path parameter %s in %s" % (short(bad_key), short(method)))
                 continue
-            if method == "send" and not may_send(role):
+            if method == "send" and not may_send(role, lease_path):
                 reject(request_id, "not the active brain (%s)" % role)
                 continue
             params = request.get("params")
