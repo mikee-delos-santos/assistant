@@ -157,3 +157,25 @@ class Clock(unittest.TestCase):
         self.assertIn("r-a", self.st["last_done"])
         self.assertNotIn("r-a", self.st["attempts"])
         self.assertEqual(self.st["sent_today"]["count"], 6)
+
+    # --- Fix round 2 ---
+
+    def test_non_hashable_schedule_type_treated_as_invalid(self):
+        # schedule.validate does `sched_type in _SCHEDULE_KEYS`, a dict
+        # membership check; a list there raises TypeError, not
+        # ReminderError. That must not stop reminders sorting after it.
+        write(self.d, id="r-0bad", schedule={"type": ["once"]})
+        write(self.d)  # id "r-a", sorts after "r-0bad.json"
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(self.text.calls, [("+639170000001", "Trash day")])
+        self.assertEqual([l for l in self.logs if l[0] == "invalid"], [("invalid", "r-0bad.json")])
+        # Only logged once even if the tick runs again with the same content.
+        self.tick(self.SLOT + timedelta(seconds=30))
+        self.assertEqual(len([l for l in self.logs if l[0] == "invalid"]), 1)
+
+    def test_deeply_nested_json_does_not_raise(self):
+        with open(os.path.join(self.d, "r-deep.json"), "w") as f:
+            f.write("[" * 100000)
+        # json.loads on this raises RecursionError, not ValueError/ReminderError.
+        self.tick(self.SLOT + timedelta(seconds=20))
+        self.assertEqual(len([l for l in self.logs if l[0] == "invalid"]), 1)

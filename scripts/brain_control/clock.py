@@ -143,7 +143,14 @@ def run(reminders_dir: str, st: Dict, now: datetime, lease: str, allow: Set[str]
         try:
             data = json.loads(raw.decode("utf-8"))
             rem = schedule.validate(data, allow=allow, file_id=file_id)
-        except (ValueError, schedule.ReminderError):
+        except Exception:
+            # Any parse or validation failure is a malformed file, not a
+            # crash: a wrong-shaped value (e.g. a list where validate()
+            # expects a hashable type) can raise TypeError, and a
+            # pathologically deep JSON document can raise RecursionError -
+            # both must be treated the same as a plain JSON error, or one
+            # bad file on disk would stop every reminder that sorts after
+            # it, every tick, forever.
             digest = _file_hash(raw)
             if invalid_seen.get(filename) != digest:
                 invalid_seen[filename] = digest
